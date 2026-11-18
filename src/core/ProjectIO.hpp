@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "core/Animation.hpp"
+#include "core/Layer2D.hpp"
 #include "core/Math.hpp"
 
 namespace ms {
@@ -70,6 +72,43 @@ struct ProjectBonePose {
     vec3 scale{1.0f, 1.0f, 1.0f};
 };
 
+// A serialised 2D layer. Mirrors Layer2D field for field; the parent is stored
+// as an index into the project's `layers_2d` array, matching Scene2D.
+struct ProjectLayer2D {
+    std::string name;
+    std::string image_path;
+    int parent = -1;
+    vec2 pivot{0.0f, 0.0f};
+    vec2 position{0.0f, 0.0f};
+    float rotation = 0.0f;
+    vec2 scale{1.0f, 1.0f};
+    int z_order = 0;
+    float opacity = 1.0f;
+    vec4 tint{1.0f, 1.0f, 1.0f, 1.0f};
+    bool visible = true;
+};
+
+// A serialised 2D keyframe channel. Only channels with keys are written, so a
+// project that keys just one property stays small.
+struct ProjectKey2D {
+    int frame = 0;
+    float value = 0.0f;    // scalar channels (rotation, opacity)
+    vec2 value2{0.0f, 0.0f};  // vector channels (position, scale)
+    // Interpolation curve that eases the span starting at this key. Stored as
+    // four numbers; a linear curve is the default and is omitted on write.
+    vec2 cp1{1.0f / 3.0f, 1.0f / 3.0f};
+    vec2 cp2{2.0f / 3.0f, 2.0f / 3.0f};
+};
+
+// A serialised 2D layer track, keyed by layer name.
+struct ProjectLayer2DTrack {
+    std::string name;
+    std::vector<ProjectKey2D> position;  // value2
+    std::vector<ProjectKey2D> scale;     // value2
+    std::vector<ProjectKey2D> rotation;  // value
+    std::vector<ProjectKey2D> opacity;   // value
+};
+
 // Everything a .msentara file stores, as plain data.
 struct Project {
     std::string model_path;   // .pmx
@@ -91,6 +130,13 @@ struct Project {
 
     std::vector<ProjectMorphWeight> morphs;
     std::vector<ProjectBonePose> bones;
+
+    // 2D editor state. `editor_mode` is "3d" or "2d"; the layer list and its
+    // tracks are empty for a 3D-only project, so an M4/M5 file loads with the
+    // 3D defaults.
+    std::string editor_mode = "3d";
+    std::vector<ProjectLayer2D> layers_2d;
+    std::vector<ProjectLayer2DTrack> layer2d_tracks;
 };
 
 // Serialises `project` to pretty-printed JSON text.

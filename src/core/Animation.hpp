@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "core/Camera.hpp"
+#include "core/Layer2D.hpp"
 #include "core/Math.hpp"
 #include "core/Skeleton.hpp"
 #include "core/Transform.hpp"
@@ -116,6 +117,88 @@ struct ScalarTrack {
 };
 
 // ---------------------------------------------------------------------------
+// 2D layer tracks
+// ---------------------------------------------------------------------------
+
+// A keyed 2D vector channel (a layer's position or scale). Each key carries a
+// Bezier that eases the span that *starts* at it, so a track can mix eased and
+// linear segments; a default-constructed Bezier is linear.
+struct Vec2Key {
+    int frame = 0;
+    vec2 value{0.0f, 0.0f};
+    Bezier bezier;
+};
+
+struct Vec2Track {
+    std::string name;
+    std::vector<Vec2Key> keys;
+
+    void sort_keys();
+    void set_key(int frame, const vec2& value, const Bezier& bezier = Bezier::linear());
+    bool remove_key(int frame);
+    bool has_key(int frame) const;
+
+    // Sampled value at `frame`, holding the nearest key outside the range.
+    vec2 sample(float frame, const vec2& fallback = vec2(0.0f)) const;
+
+    bool empty() const { return keys.empty(); }
+    int frame_start() const;
+    int frame_end() const;
+};
+
+// A keyed scalar channel (a layer's rotation in degrees, or its opacity).
+struct FloatKey {
+    int frame = 0;
+    float value = 0.0f;
+    Bezier bezier;
+};
+
+struct FloatTrack {
+    std::string name;
+    std::vector<FloatKey> keys;
+
+    void sort_keys();
+    void set_key(int frame, float value, const Bezier& bezier = Bezier::linear());
+    bool remove_key(int frame);
+    bool has_key(int frame) const;
+
+    float sample(float frame, float fallback = 0.0f) const;
+
+    bool empty() const { return keys.empty(); }
+    int frame_start() const;
+    int frame_end() const;
+};
+
+// The animated value of one 2D layer at a point in time.
+struct Layer2DTrackState {
+    vec2 position{0.0f, 0.0f};
+    float rotation = 0.0f;  // degrees
+    vec2 scale{1.0f, 1.0f};
+    float opacity = 1.0f;
+};
+
+// Every animated channel of one 2D layer, keyed by the layer's *name* so a
+// track survives a project that reorders layers. A channel with no keys leaves
+// the corresponding field of the `base` state untouched, so a track that only
+// animates opacity does not reset the layer's position.
+struct Layer2DTrack {
+    std::string name;  // the layer name this track drives
+    Vec2Track position;
+    Vec2Track scale;
+    FloatTrack rotation;
+    FloatTrack opacity;
+
+    Layer2DTrackState sample(float frame, const Layer2DTrackState& base) const;
+
+    bool empty() const {
+        return position.empty() && scale.empty() && rotation.empty() &&
+               opacity.empty();
+    }
+    int frame_start() const;
+    int frame_end() const;
+};
+
+// ---------------------------------------------------------------------------
 // Camera track
 // ---------------------------------------------------------------------------
 
@@ -170,20 +253,26 @@ struct AnimationClip {
     // because a camera is not a bone: it is evaluated into CameraState, not
     // into a Pose.
     CameraTrack camera_track;
+    // 2D cutout-animation tracks, keyed by layer name. Empty for a 3D clip.
+    std::vector<Layer2DTrack> layer_2d_tracks;
 
     const BoneTrack* find_bone(const std::string& bone_name) const;
     BoneTrack& bone(const std::string& bone_name);
     const ScalarTrack* find_scalar(const std::string& track_name) const;
     ScalarTrack& scalar(const std::string& track_name);
+    const Layer2DTrack* find_layer_2d(const std::string& layer_name) const;
+    Layer2DTrack& layer_2d(const std::string& layer_name);
 
     // Highest keyed frame across every track, or 0 when empty. Drives the
     // timeline's end frame after an import.
     int frame_end() const;
 
     bool has_camera() const { return !camera_track.empty(); }
+    bool has_layer_2d() const { return !layer_2d_tracks.empty(); }
 
     bool empty() const {
-        return bone_tracks.empty() && scalar_tracks.empty() && camera_track.empty();
+        return bone_tracks.empty() && scalar_tracks.empty() &&
+               camera_track.empty() && layer_2d_tracks.empty();
     }
 };
 
@@ -205,5 +294,12 @@ void apply_clip(const Skeleton& skeleton, const AnimationClip& clip,
 // Returns false (leaving the camera untouched) when the clip has no camera
 // track, so a motion without a camera does not stomp the user's viewpoint.
 bool apply_camera_clip(const AnimationClip& clip, float frame, Camera& camera);
+
+// Applies the clip's 2D layer tracks at `frame` onto `scene`. Each track is
+// matched to a layer by name; unmatched tracks are ignored, and a channel with
+// no keys leaves its layer field alone. Returns true when at least one layer
+// was driven, so a caller can tell "no 2D animation" from "animated to the
+// same value".
+bool apply_layer_2d_clip(const AnimationClip& clip, float frame, Scene2D& scene);
 
 }  // namespace ms

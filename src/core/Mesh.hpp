@@ -85,4 +85,15 @@ MeshData make_unit_cube();
 // `cell_size` spacing, centred on the origin.
 MeshData make_grid(int half_extent = 10, float cell_size = 1.0f);
 
+// A unit quad on the XY plane spanning [0, 1] x [0, 1], with the texture
+// corners as UVs and y increasing downward (the 2D/pixel convention). A 2D
+// layer is drawn by scaling this quad to the image size; the shared, static
+// buffer means every layer can be drawn without re-uploading geometry.
+MeshData make_unit_quad();
+
+// A 2D grid on the XY plane (z = 0): `half_extent` cells each way with
+// `cell_size` spacing, centred on the origin. Drawn in 2D mode in place of the
+// 3D floor grid.
+MeshData make_grid_2d(int half_extent = 10, float cell_size = 100.0f);
+
 }  // namespace ms

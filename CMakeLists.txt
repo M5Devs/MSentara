@@ -57,6 +57,7 @@ msentara_fetch_dependencies()
 add_library(msentara_core STATIC
     src/core/Animation.cpp
     src/core/Camera.cpp
+    src/core/Layer2D.cpp
     src/core/Mesh.cpp
     src/core/Morph.cpp
     src/core/Physics.cpp
@@ -118,6 +119,7 @@ msentara_set_warnings(msentara_platform)
 add_library(msentara_ui STATIC
     src/ui/Editor.cpp
     src/ui/ModelInstance.cpp
+    src/ui/Scene2DInstance.cpp
     src/ui/Theme.cpp
 )
 target_include_directories(msentara_ui PUBLIC

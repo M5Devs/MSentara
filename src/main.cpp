@@ -28,6 +28,7 @@
 #endif
 
 #include "core/Animation.hpp"
+#include "core/Layer2D.hpp"
 #include "core/Mesh.hpp"
 #include "core/ProjectIO.hpp"
 #include "formats/VmdLoader.hpp"
@@ -41,6 +42,7 @@
 #include "ImGuizmo.h"
 #include "ui/Editor.hpp"
 #include "ui/ModelInstance.hpp"
+#include "ui/Scene2DInstance.hpp"
 #include "ui/Theme.hpp"
 #include "util/sokol_imgui.h"
 
@@ -55,8 +57,11 @@ constexpr vec3 kWindowBg{0.17f, 0.17f, 0.17f};
 Renderer g_renderer;
 Editor g_editor;
 ModelInstance g_model;
+Scene2DInstance g_scene2d;
 GpuMesh g_cube;
 GpuMesh g_grid;
+GpuMesh g_grid_2d;
+GpuMesh g_quad;
 RenderTarget g_viewport;
 int g_frame_count = 0;
 
@@ -72,6 +77,15 @@ std::string g_vmd_path;
 // A project supersedes --pmx/--vmd: it names both files itself, so it is
 // loaded last and its paths win.
 std::string g_project_path;
+
+// One or more 2D image paths supplied on the command line (--image2d <path>,
+// repeatable). Each becomes a cutout layer and the editor switches to 2D mode,
+// so a 2D scene can be driven from a script or the headless smoke test.
+std::vector<std::string> g_image2d_paths;
+
+// Start in 2D mode (--2d) even with no image: useful for a scripted 2D export
+// or a project that stores its own mode.
+bool g_start_mode_2d = false;
 
 // Headless-ish export driven from the command line (--export <dir>): render the
 // frame range once the window and viewport exist, then quit. Used for
@@ -93,6 +107,49 @@ int g_target_w = 0;
 int g_target_h = 0;
 
 void apply_camera_navigation();
+void apply_project_2d(const Project& project);
+
+// The layer name for an imported image: the file's stem (its name without
+// directory or extension), so "assets/head.png" becomes "head". Falls back to
+// "Layer" for a path with no stem.
+std::string image_layer_name(const std::string& path) {
+    std::size_t begin = path.find_last_of("/\\");
+    begin = (begin == std::string::npos) ? 0 : begin + 1;
+    const std::size_t dot = path.find_last_of('.');
+    std::size_t end = (dot == std::string::npos || dot < begin) ? path.size() : dot;
+    if (end <= begin) {
+        return "Layer";
+    }
+    return path.substr(begin, end - begin);
+}
+
+// Adds a 2D cutout layer from an image file and switches the editor to 2D mode
+// so the new layer is immediately visible. The app owns the renderer, so it
+// performs the decode/upload; the editor only reads the scene.
+LayerId add_image_layer2d(const std::string& path) {
+    if (path.empty()) {
+        return kInvalidLayer;
+    }
+    const std::string name = image_layer_name(path);
+    const LayerId id =
+        g_scene2d.add_layer_from_image(name, path, g_renderer);
+    const Layer2D* layer = g_scene2d.scene().find(id);
+    if (layer != nullptr && layer->size.x <= 0.0f) {
+        g_editor.set_status("Added 2D layer '" + name +
+                            "' (image could not be decoded; drawn as a blank)");
+        std::fprintf(stderr, "MSentara: could not decode 2D image '%s'\n",
+                     path.c_str());
+    } else {
+        g_editor.set_status("Added 2D layer '" + name + "'");
+        std::printf("MSentara: added 2D layer '%s' from '%s' (%g x %g px)\n",
+                    name.c_str(), path.c_str(),
+                    layer != nullptr ? static_cast<double>(layer->size.x) : 0.0,
+                    layer != nullptr ? static_cast<double>(layer->size.y) : 0.0);
+    }
+    g_editor.set_mode(EditorMode::TwoD);
+    g_scene2d.scene().select(id);
+    return id;
+}
 
 // Loads a model, replacing any previous one, and frames the camera on it.
 void load_model(const std::string& path) {
@@ -194,6 +251,10 @@ void load_project_file(const std::string& path) {
     // Timeline and camera come from the editor itself.
     g_editor.apply_project_view(project);
 
+    // The 2D scene is rebuilt from the project (images are re-decoded). This is
+    // a no-op for a 3D-only project.
+    apply_project_2d(project);
+
     if (g_model.valid()) {
         g_model.set_ik_enabled(project.ik_enabled);
         g_model.set_physics_enabled(project.physics_enabled);
@@ -220,6 +281,82 @@ void load_project_file(const std::string& path) {
     std::printf("MSentara: opened project '%s' (model='%s', motion='%s')\n",
                 path.c_str(), project.model_path.c_str(),
                 project.motion_path.c_str());
+}
+
+// Applies a project's 2D state: rebuilds the layer list (images decoded and
+// uploaded) and reconstructs the 2D animation clip. Layers are created in
+// order so a stored parent index still refers to the right layer.
+void apply_project_2d(const Project& project) {
+    if (project.layers_2d.empty() && project.layer2d_tracks.empty()) {
+        return;
+    }
+
+    // Rebuild from scratch: a project is a complete description of the scene.
+    g_scene2d.clear(g_renderer);
+
+    for (const ProjectLayer2D& src : project.layers_2d) {
+        LayerId id = kInvalidLayer;
+        if (!src.image_path.empty()) {
+            id = g_scene2d.add_layer_from_image(src.name, src.image_path,
+                                                g_renderer, src.parent);
+        } else {
+            id = g_scene2d.add_group(src.name, src.parent);
+        }
+        Layer2D* layer = g_scene2d.scene().find(id);
+        if (layer == nullptr) {
+            continue;
+        }
+        // The image decode set `size`; the stored fields are the authored
+        // values, so they overwrite whatever the defaults were.
+        layer->pivot = src.pivot;
+        layer->position = src.position;
+        layer->rotation = src.rotation;
+        layer->scale = src.scale;
+        layer->z_order = src.z_order;
+        layer->opacity = src.opacity;
+        layer->tint = src.tint;
+        layer->visible = src.visible;
+    }
+
+    // Rebuild the clip's layer tracks.
+    g_scene2d.clip() = AnimationClip{};
+    for (const ProjectLayer2DTrack& src : project.layer2d_tracks) {
+        Layer2DTrack& track = g_scene2d.clip().layer_2d(src.name);
+        for (const ProjectKey2D& k : src.position) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            track.position.set_key(k.frame, k.value2, b);
+        }
+        for (const ProjectKey2D& k : src.scale) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            track.scale.set_key(k.frame, k.value2, b);
+        }
+        for (const ProjectKey2D& k : src.rotation) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            track.rotation.set_key(k.frame, k.value, b);
+        }
+        for (const ProjectKey2D& k : src.opacity) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            track.opacity.set_key(k.frame, k.value, b);
+        }
+    }
+
+    if (!g_scene2d.scene().empty()) {
+        g_scene2d.scene().select(0);
+    }
+    // Apply the current frame so the reopened pose matches what was saved.
+    if (g_scene2d.has_clip()) {
+        apply_layer_2d_clip(g_scene2d.clip(), g_editor.timeline().current_frame,
+                            g_scene2d.scene());
+    }
+    g_editor.set_mode(EditorMode::TwoD);
 }
 
 // Saves the current editor state as a .msentara project.
@@ -254,6 +391,17 @@ void render_scene_into_pass() {
             ? static_cast<float>(g_viewport.width) /
                   static_cast<float>(g_viewport.height)
             : 1.0f;
+
+    // 2D mode draws the cutout layers (and a 2D grid) with the pixel-space
+    // projection; the 3D grid, cube and model are skipped entirely.
+    if (g_editor.mode() == EditorMode::TwoD) {
+        const mat4 proj2d = g_editor.camera().projection_matrix_2d(aspect);
+        // The 2D grid is a line mesh, so it draws with the line pipeline.
+        g_renderer.draw_lines(g_grid_2d, mat4(1.0f), proj2d);
+        g_scene2d.draw(g_renderer, g_quad, proj2d);
+        return;
+    }
+
     const mat4 view_proj = g_editor.camera().view_projection(aspect);
 
     g_renderer.draw_lines(g_grid, mat4(1.0f), view_proj);
@@ -370,7 +518,14 @@ bool step_export() {
     const int frame = g_export.frame;
     const float f = static_cast<float>(frame);
 
-    if (g_model.valid()) {
+    if (g_editor.mode() == EditorMode::TwoD) {
+        // 2D export: drive the cutout tracks from the clip at this frame. No
+        // GPU upload is needed (the sprites use a shared static quad), so this
+        // is a pure CPU evaluation.
+        if (g_scene2d.has_clip()) {
+            apply_layer_2d_clip(g_scene2d.clip(), f, g_scene2d.scene());
+        }
+    } else if (g_model.valid()) {
         if (g_model.has_animation()) {
             g_model.apply_animation(f);
         }
@@ -459,9 +614,20 @@ void init_cb() {
     apply_blender_dark_theme();
     g_editor.setup();
     g_editor.set_model(&g_model);
+    g_editor.set_scene2d(&g_scene2d);
+
+    // A --2d flag starts in 2D mode; a loaded project or image may override
+    // this later (both switch modes explicitly).
+    if (g_start_mode_2d) {
+        g_editor.set_mode(EditorMode::TwoD);
+    }
 
     g_cube = g_renderer.create_mesh(make_unit_cube());
     g_grid = g_renderer.create_mesh(make_grid(10, 1.0f));
+    // 2D geometry: a shared unit quad every layer is drawn with, and a 100px
+    // grid that gives the 2D viewport a sense of scale.
+    g_quad = g_renderer.create_mesh(make_unit_quad());
+    g_grid_2d = g_renderer.create_mesh(make_grid_2d(10, 100.0f));
 
     if (const char* limit = std::getenv("MSENTARA_FRAME_LIMIT")) {
         g_frame_limit = std::atoi(limit);
@@ -499,6 +665,18 @@ void init_cb() {
     }
     if (!project.empty()) {
         load_project_file(project);
+    }
+
+    // 2D images: each --image2d becomes a layer and switches the editor to 2D.
+    // MSENTARA_IMAGE2D supplies one path when no flag was given.
+    std::vector<std::string> images = g_image2d_paths;
+    if (images.empty()) {
+        if (const char* env = std::getenv("MSENTARA_IMAGE2D")) {
+            images.emplace_back(env);
+        }
+    }
+    for (const std::string& image : images) {
+        add_image_layer2d(image);
     }
 }
 
@@ -541,6 +719,9 @@ void frame_cb() {
     }
     if (g_editor.has_pending_vmd_load()) {
         load_motion(g_editor.take_pending_vmd_load());
+    }
+    if (g_editor.has_pending_image2d()) {
+        add_image_layer2d(g_editor.take_pending_image2d());
     }
     if (g_editor.has_pending_project_open()) {
         load_project_file(g_editor.take_pending_project_open());
@@ -605,33 +786,48 @@ void frame_cb() {
     // Drive the pose from the active clip when the timeline is playing, or
     // when the transport/scrubber changed the frame. The flag is cleared here
     // so a scrub set during the previous frame's UI is consumed exactly once.
-    if (g_model.has_animation() &&
-        (g_editor.timeline().playing || g_editor.timeline_changed())) {
+    const bool frame_dirty = g_editor.timeline().playing ||
+                             g_editor.timeline_changed() ||
+                             g_editor.layers2d_changed();
+    if (g_editor.mode() == EditorMode::TwoD) {
+        // 2D: re-evaluate the layer tracks at the current frame. The keying
+        // tools flag layers2d_changed() so a fresh key is applied immediately.
+        if (g_scene2d.has_clip() && frame_dirty) {
+            apply_layer_2d_clip(g_scene2d.clip(), g_editor.timeline().current_frame,
+                                g_scene2d.scene());
+        }
+    } else if (g_model.has_animation() && frame_dirty) {
         g_model.apply_animation(g_editor.timeline().current_frame);
     }
     g_editor.clear_timeline_changed();
+    g_editor.clear_layers2d_changed();
 
     // Re-evaluate the pose and re-upload the skinned vertices for this frame.
     // Physics advances by the real frame time, so a slow frame steps further
     // rather than the simulation running in slow motion. A request to reset
-    // the simulation (from the UI) is honoured before the step.
-    if (g_editor.consume_physics_reset()) {
-        g_model.reset_physics();
+    // the simulation (from the UI) is honoured before the step. The 2D path
+    // has no GPU upload (sprites use a shared static quad), so it is skipped.
+    if (g_editor.mode() != EditorMode::TwoD) {
+        if (g_editor.consume_physics_reset()) {
+            g_model.reset_physics();
+        }
+        g_model.update(g_renderer, static_cast<float>(sapp_frame_duration()));
     }
-    g_model.update(g_renderer, static_cast<float>(sapp_frame_duration()));
 
     // Let a loaded motion's camera track drive the viewport when the user has
     // opted in. This runs after navigation so a scrub (which changed the frame)
     // is reflected, and is skipped while the user is actively orbiting so the
-    // two do not fight.
-    if (g_editor.use_vmd_camera() && g_model.valid() &&
-        g_model.has_animation() && g_model.clip().has_camera() &&
-        !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()) {
+    // two do not fight. 2D mode has no camera track, so this is 3D-only.
+    if (g_editor.mode() != EditorMode::TwoD && g_editor.use_vmd_camera() &&
+        g_model.valid() && g_model.has_animation() &&
+        g_model.clip().has_camera() && !ImGuizmo::IsUsing() &&
+        !ImGuizmo::IsOver()) {
         apply_camera_clip(g_model.clip(), g_editor.timeline().current_frame,
                           g_editor.camera());
     }
 
-    // 1) Render the 3D scene into the offscreen target.
+    // 1) Render the scene (3D or 2D, per the editor mode) into the offscreen
+    // target.
     if (g_viewport.valid()) {
         g_renderer.begin_offscreen_pass(g_viewport, kViewportBg);
         render_scene_into_pass();
@@ -660,8 +856,11 @@ void frame_cb() {
 
 void cleanup_cb() {
     g_model.clear(g_renderer);
+    g_scene2d.clear(g_renderer);
     g_renderer.destroy_mesh(g_cube);
     g_renderer.destroy_mesh(g_grid);
+    g_renderer.destroy_mesh(g_grid_2d);
+    g_renderer.destroy_mesh(g_quad);
     g_renderer.destroy_render_target(g_viewport);
     simgui_shutdown();
     g_renderer.shutdown();
@@ -670,6 +869,9 @@ void cleanup_cb() {
 // Blender's viewport navigation: middle-drag orbits, shift+middle-drag pans,
 // ctrl+middle-drag (or the wheel) zooms. The gizmo takes priority, so
 // navigation is suppressed while a manipulator handle is hovered or dragged.
+//
+// In 2D mode there is no orbit: middle-drag pans and the wheel zooms, both in
+// pixel space (the camera's target.xy and distance carry the 2D pan/zoom).
 void apply_camera_navigation() {
     if (!g_editor.viewport_hovered()) {
         return;
@@ -684,6 +886,24 @@ void apply_camera_navigation() {
     Camera& cam = g_editor.camera();
     ImGuiIO& io = ImGui::GetIO();
     const bool middle = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+
+    if (g_editor.mode() == EditorMode::TwoD) {
+        // Pixel-space pan/zoom. The 2D projection maps one pixel to one world
+        // unit, so a drag moves the view by exactly the cursor delta.
+        if (middle) {
+            const ImVec2 d = io.MouseDelta;
+            cam.target.x -= d.x;
+            cam.target.y -= d.y;
+        }
+        if (io.MouseWheel != 0.0f) {
+            // A zoom step shrinks/grows the visible half-height (the pixels the
+            // viewport spans vertically).
+            cam.distance *= std::pow(0.9f, io.MouseWheel);
+            cam.distance = std::max(cam.distance, 1.0f);
+        }
+        return;
+    }
+
     if (middle) {
         const ImVec2 d = io.MouseDelta;
         if (io.KeyShift) {
@@ -745,6 +965,12 @@ void event_cb(const sapp_event* ev) {
             case SAPP_KEYCODE_SPACE:
                 editor.timeline().playing = !editor.timeline().playing;
                 break;
+            // Tab toggles the 3D/2D viewport, as in Blender's editor switching.
+            case SAPP_KEYCODE_TAB:
+                editor.set_mode(editor.mode() == EditorMode::TwoD
+                                    ? EditorMode::ThreeD
+                                    : EditorMode::TwoD);
+                break;
             default:
                 break;
         }
@@ -770,6 +996,13 @@ sapp_desc sokol_main(int argc, char* argv[]) {
             g_project_path = argv[++i];
         } else if (arg.rfind("--project=", 0) == 0) {
             g_project_path = arg.substr(10);
+        } else if (arg == "--image2d" && i + 1 < argc) {
+            // Repeatable: each occurrence adds one cutout layer.
+            g_image2d_paths.emplace_back(argv[++i]);
+        } else if (arg.rfind("--image2d=", 0) == 0) {
+            g_image2d_paths.push_back(arg.substr(10));
+        } else if (arg == "--2d") {
+            g_start_mode_2d = true;
         } else if (arg == "--export" && i + 1 < argc) {
             g_export_dir = argv[++i];
         } else if (arg.rfind("--export=", 0) == 0) {
