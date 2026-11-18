@@ -21,6 +21,7 @@ after a model is re-exported (as long as the morph and bone names are stable).
 | `camera` | object | Orbit-camera state, see below. |
 | `ik_enabled` | bool | Whether CCD-IK solving is on. |
 | `physics_enabled` | bool | Whether rigid-body simulation is on. Missing means `true`. |
+| `use_vmd_camera` | bool | Whether the loaded motion's camera track drives the viewport. Missing means `false`. |
 | `morphs` | array | Manual morph weights, see below. |
 | `bones` | array | Manual bone poses, see below. |
 
@@ -47,12 +48,16 @@ understand, is rejected with a readable error rather than being misread.
 
 ```json
 { "target": [0.0, 1.0, 0.0], "distance": 8.0,
-  "yaw": -35.0, "pitch": 25.0 }
+  "yaw": -35.0, "pitch": 25.0,
+  "roll": 0.0, "fov_y": 45.0, "orthographic": false }
 ```
 
-`target` is a `[x, y, z]` triple; `yaw` and `pitch` are in degrees. These are
-the orbit parameters, so a reopened project returns to the exact viewpoint it
-was saved from.
+`target` is a `[x, y, z]` triple; `yaw`, `pitch` and `roll` are in degrees.
+These are the orbit parameters, so a reopened project returns to the exact
+viewpoint it was saved from. `roll` becomes non-zero only when a VMD camera
+keyframe with a tilt is applied; `fov_y` is the vertical field of view and
+`orthographic` selects the projection. All three default to the interactive
+camera's values, so a file written before they existed still loads.
 
 ## `morphs`
 

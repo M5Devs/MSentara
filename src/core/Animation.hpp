@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "core/Camera.hpp"
 #include "core/Math.hpp"
 #include "core/Skeleton.hpp"
 #include "core/Transform.hpp"
@@ -115,6 +116,45 @@ struct ScalarTrack {
 };
 
 // ---------------------------------------------------------------------------
+// Camera track
+// ---------------------------------------------------------------------------
+
+// One VMD camera keyframe. Each key carries six independent Bezier curves — one
+// per interest axis (X/Y/Z), one for rotation, one for distance and one for the
+// field of view — applied over the span that *starts* at this key. (VMD stores
+// the six curves sequentially in its 24-byte interpolation block, unlike the
+// bone block's interleaved layout; the loader decodes both correctly.)
+struct CameraKey {
+    int frame = 0;
+    CameraState state;
+
+    Bezier bezier_x;
+    Bezier bezier_y;
+    Bezier bezier_z;
+    Bezier bezier_rot;
+    Bezier bezier_distance;
+    Bezier bezier_fov;
+};
+
+// A camera animation: a list of look-at keys. `sample` reproduces the
+// reference implementation (saba's VMDCameraController::Evaluate) exactly,
+// including its rule that two keys one frame apart are a hard cut rather than a
+// one-frame interpolation.
+struct CameraTrack {
+    std::vector<CameraKey> keys;
+
+    void sort_keys();
+
+    // The interpolated camera state at `frame`. Outside the keyed range the
+    // nearest key is held. Returns the default CameraState when empty.
+    CameraState sample(float frame) const;
+
+    bool empty() const { return keys.empty(); }
+    int frame_start() const;
+    int frame_end() const;
+};
+
+// ---------------------------------------------------------------------------
 // Clip
 // ---------------------------------------------------------------------------
 
@@ -126,6 +166,10 @@ struct AnimationClip {
     float fps = 30.0f;  // MMD's fixed timing
     std::vector<BoneTrack> bone_tracks;
     std::vector<ScalarTrack> scalar_tracks;
+    // The camera animation, when the motion carries one. A separate track
+    // because a camera is not a bone: it is evaluated into CameraState, not
+    // into a Pose.
+    CameraTrack camera_track;
 
     const BoneTrack* find_bone(const std::string& bone_name) const;
     BoneTrack& bone(const std::string& bone_name);
@@ -136,8 +180,10 @@ struct AnimationClip {
     // timeline's end frame after an import.
     int frame_end() const;
 
+    bool has_camera() const { return !camera_track.empty(); }
+
     bool empty() const {
-        return bone_tracks.empty() && scalar_tracks.empty();
+        return bone_tracks.empty() && scalar_tracks.empty() && camera_track.empty();
     }
 };
 
@@ -154,5 +200,10 @@ struct AnimationClip {
 // recompute local/global/palette.
 void apply_clip(const Skeleton& skeleton, const AnimationClip& clip,
                 float frame, Pose& pose);
+
+// Samples the clip's camera track at `frame` and writes it into `camera`.
+// Returns false (leaving the camera untouched) when the clip has no camera
+// track, so a motion without a camera does not stomp the user's viewpoint.
+bool apply_camera_clip(const AnimationClip& clip, float frame, Camera& camera);
 
 }  // namespace ms

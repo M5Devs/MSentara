@@ -20,6 +20,27 @@
 
 namespace ms {
 
+// ---------------------------------------------------------------------------
+// Look-at camera state (what a VMD camera keyframe describes)
+// ---------------------------------------------------------------------------
+
+// The parameters a VMD camera keyframe carries, in MSentara's right-handed
+// space (the VMD loader mirrors MMD's left-handed values before they land
+// here).
+//
+// MMD's camera is a "look-at" rig rather than an orbit rig: `interest` is the
+// point it looks at, `rotate` is its orientation as Euler XYZ radians,
+// `distance` is how far the eye sits behind the interest along the view
+// direction, `fov` is the vertical field of view in degrees, and `perspective`
+// selects a perspective or orthographic projection.
+struct CameraState {
+    vec3 interest{0.0f, 10.0f, 0.0f};
+    vec3 rotate{0.0f, 0.0f, 0.0f};  // Euler XYZ, radians
+    float distance = 50.0f;
+    float fov = 30.0f;  // vertical field of view, degrees
+    bool perspective = true;
+};
+
 // Blender-style orbit camera.
 //
 // The camera always looks at `target`, positioned on a sphere described by
@@ -37,6 +58,7 @@ public:
     float yaw = -35.0f;    // degrees around world Y
     float pitch = 25.0f;   // degrees above the XZ plane, clamped to +-89
     float fov_y = 45.0f;   // vertical field of view, degrees
+    float roll = 0.0f;     // camera roll, degrees (VMD camera tracks use it)
     float near_plane = 0.05f;
     float far_plane = 500.0f;
     bool orthographic = false;
@@ -67,6 +89,18 @@ public:
 
     // Frames a sphere: keeps the current orientation, fits the radius.
     void frame(const vec3& center, float radius);
+
+    // Applies a VMD look-at camera state (from CameraState, i.e. an evaluated
+    // camera keyframe). The camera keeps the orbit representation the rest of
+    // the app uses: `target` becomes the interest point, and yaw/pitch are
+    // recovered from the state's Euler rotation so a VMD shot is reproducible
+    // from the same fields the UI edits. `roll` and the projection mode are
+    // taken from the state directly.
+    void apply_vmd_state(const CameraState& state);
+
+    // Builds a state from the current orbit parameters, for round-tripping and
+    // for tests. The inverse of apply_vmd_state.
+    CameraState vmd_state() const;
 
     // Standard Blender view presets (numpad 1/3/7 etc.).
     void set_view_front();

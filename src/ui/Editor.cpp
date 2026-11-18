@@ -38,6 +38,7 @@ constexpr const char* kOutlinerWindow = "Outliner";
 constexpr const char* kPropertiesWindow = "Properties";
 constexpr const char* kMorphsWindow = "Morphs";
 constexpr const char* kTimelineWindow = "Timeline";
+constexpr const char* kExportModal = "Export PNG Sequence";
 
 // The default docking layout: viewport on the left, outliner top-right,
 // properties bottom-right, timeline across the bottom.
@@ -143,10 +144,16 @@ void Editor::draw(const RenderTarget& viewport) {
     draw_morphs_panel();
     draw_properties_panel();
     draw_timeline_panel();
+    draw_export_modal();
 
     if (show_demo_) {
         ImGui::ShowDemoWindow(&show_demo_);
     }
+}
+
+bool Editor::has_vmd_camera() const {
+    return model_ != nullptr && model_->valid() && model_->has_animation() &&
+           model_->clip().has_camera();
 }
 
 void Editor::draw_main_menu_bar() {
@@ -200,6 +207,14 @@ void Editor::draw_main_menu_bar() {
                 request_load_vmd(vmd_path_buffer_);
             }
         }
+        ImGui::Separator();
+        // Offline rendering is a desktop-only feature: the web build has no
+        // synchronous framebuffer readback, so the entry is hidden there.
+#if !defined(__EMSCRIPTEN__)
+        if (ImGui::MenuItem("Export PNG Sequence…")) {
+            export_modal_open_ = true;
+        }
+#endif
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
             sapp_request_quit();
@@ -681,6 +696,18 @@ void Editor::draw_timeline_panel() {
     ImGui::SameLine();
     ImGui::Checkbox("Loop", &timeline_.loop);
 
+    // When the loaded motion carries a camera track, let the user drive the
+    // viewport from it. Disabled (and unchecked) when there is no camera track.
+    if (has_vmd_camera()) {
+        ImGui::SameLine();
+        bool use = use_vmd_camera_;
+        if (ImGui::Checkbox("VMD Camera", &use)) {
+            use_vmd_camera_ = use;
+        }
+    } else {
+        use_vmd_camera_ = false;
+    }
+
     ImGui::SameLine();
     ImGui::TextDisabled("| %d frames  (%.2fs @ %.0f fps)",
                         timeline_.frame_end - timeline_.frame_start,
@@ -741,14 +768,31 @@ void Editor::draw_timeline_panel() {
                         IM_COL32(240, 200, 90, 200));
                 }
             }
+            // Camera keys get their own row and colour so a camera cut is easy
+            // to spot against the bone keys.
+            for (const CameraKey& key : clip.camera_track.keys) {
+                const float x =
+                    ruler_origin.x +
+                    static_cast<float>(key.frame - timeline_.frame_start) *
+                        px_per_frame;
+                if (x < ruler_origin.x || x > ruler_origin.x + ruler_size.x) {
+                    continue;
+                }
+                dl->AddLine(
+                    ImVec2(x, ruler_origin.y + 22.0f),
+                    ImVec2(x, ruler_origin.y + 22.0f + 14.0f),
+                    IM_COL32(120, 200, 255, 220));
+            }
         }
     }
     ImGui::Dummy(ruler_size);
 
     if (model_ != nullptr && model_->has_animation()) {
-        ImGui::TextDisabled("Motion: %zu bone tracks, %zu scalar tracks",
+        ImGui::TextDisabled("Motion: %zu bone tracks, %zu scalar tracks, "
+                            "%zu camera keys",
                             model_->clip().bone_tracks.size(),
-                            model_->clip().scalar_tracks.size());
+                            model_->clip().scalar_tracks.size(),
+                            model_->clip().camera_track.keys.size());
     } else {
         ImGui::TextDisabled("No motion loaded (File > Import VMD)");
     }
@@ -759,6 +803,77 @@ void Editor::draw_timeline_panel() {
     }
 
     ImGui::End();
+}
+
+// Opens a modal that collects the offline export parameters (output directory
+// and frame range) and files the request. The actual render loop lives in the
+// app, because it owns the renderer.
+void Editor::draw_export_modal() {
+#if defined(__EMSCRIPTEN__)
+    export_modal_open_ = false;
+    return;
+#else
+    // Seed the fields from the timeline the first time the modal is opened.
+    if (export_modal_open_ && export_start_ == 0 && export_end_ == 0) {
+        export_start_ = timeline_.frame_start;
+        export_end_ = timeline_.frame_end;
+    }
+
+    if (export_modal_open_) {
+        ImGui::OpenPopup(kExportModal);
+    }
+    if (!ImGui::BeginPopupModal(kExportModal, &export_modal_open_,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted("Output directory");
+    ImGui::SetNextItemWidth(420.0f);
+    ImGui::InputText("##export_dir", export_dir_buffer_,
+                     sizeof(export_dir_buffer_));
+    ImGui::TextDisabled(
+        "Files are written as frame_0000.png, frame_0001.png, ...");
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Frame range");
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragInt("##export_start", &export_start_, 1.0f, -100000, 100000,
+                   "Start %d");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragInt("##export_end", &export_end_, 1.0f, -100000, 100000,
+                   "End %d");
+    if (export_end_ < export_start_) {
+        export_end_ = export_start_;
+    }
+
+    ImGui::Spacing();
+    if (!has_vmd_camera()) {
+        ImGui::TextDisabled(
+            "Tip: enable \"VMD Camera\" to render from the motion's camera.");
+    }
+
+    ImGui::Separator();
+    const bool dir_ok = export_dir_buffer_[0] != '\0';
+    ImGui::BeginDisabled(!dir_ok);
+    if (ImGui::Button("Export", ImVec2(120.0f, 0.0f))) {
+        ExportRequest request;
+        request.directory = export_dir_buffer_;
+        request.frame_start = export_start_;
+        request.frame_end = export_end_;
+        request.fps = timeline_.fps;
+        request_export(request);
+        export_modal_open_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+        export_modal_open_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+#endif
 }
 
 Project Editor::capture_project(const std::string& model_path,
@@ -777,6 +892,10 @@ Project Editor::capture_project(const std::string& model_path,
     project.camera.distance = camera_.distance;
     project.camera.yaw = camera_.yaw;
     project.camera.pitch = camera_.pitch;
+    project.camera.roll = camera_.roll;
+    project.camera.fov_y = camera_.fov_y;
+    project.camera.orthographic = camera_.orthographic;
+    project.use_vmd_camera = use_vmd_camera_;
 
     if (model_ != nullptr && model_->valid()) {
         project.ik_enabled = model_->ik_enabled();
@@ -824,6 +943,10 @@ void Editor::apply_project_view(const Project& project) {
     camera_.distance = project.camera.distance;
     camera_.yaw = project.camera.yaw;
     camera_.pitch = project.camera.pitch;
+    camera_.roll = project.camera.roll;
+    camera_.fov_y = project.camera.fov_y;
+    camera_.orthographic = project.camera.orthographic;
+    use_vmd_camera_ = project.use_vmd_camera;
 }
 
 }  // namespace ms

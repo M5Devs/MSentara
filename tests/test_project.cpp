@@ -39,6 +39,8 @@ Project make_sample() {
     p.camera.distance = 12.75f;
     p.camera.yaw = -42.0f;
     p.camera.pitch = 17.5f;
+    p.camera.roll = 8.25f;
+    p.use_vmd_camera = true;
     p.ik_enabled = false;
     p.physics_enabled = false;
     p.morphs = {{"Smile", 0.75f}, {"Blink", 0.25f}};
@@ -71,6 +73,8 @@ void test_round_trip_preserves_everything() {
     MS_CHECK(nearly(loaded.camera.distance, original.camera.distance));
     MS_CHECK(nearly(loaded.camera.yaw, original.camera.yaw));
     MS_CHECK(nearly(loaded.camera.pitch, original.camera.pitch));
+    MS_CHECK(nearly(loaded.camera.roll, original.camera.roll));
+    MS_CHECK(loaded.use_vmd_camera == original.use_vmd_camera);
     MS_CHECK(loaded.ik_enabled == original.ik_enabled);
     MS_CHECK(loaded.physics_enabled == original.physics_enabled);
 
@@ -142,6 +146,10 @@ void test_minimal_file_uses_defaults() {
     MS_CHECK(loaded.loop);
     MS_CHECK(loaded.morphs.empty());
     MS_CHECK(loaded.bones.empty());
+    // New in this milestone: absent camera roll and VMD-camera flag default to
+    // zero and off, so older project files still load.
+    MS_CHECK(nearly(loaded.camera.roll, 0.0f));
+    MS_CHECK(!loaded.use_vmd_camera);
 }
 
 void test_file_round_trip() {

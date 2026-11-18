@@ -53,6 +53,14 @@ public:
     void begin_swapchain_pass(const vec3& clear_color);
     void end_pass();
 
+    // Reads the offscreen target's colour image back into tightly packed RGBA8,
+    // with rows ordered top-down (the orientation write_png_rgba expects). Must
+    // be called inside the pass for `rt`, after its draws, while its
+    // framebuffer is still bound. Returns false on the web build (WebGL2 has no
+    // synchronous readback) or for an invalid target.
+    bool read_color_pixels(const RenderTarget& rt,
+                           std::vector<std::uint8_t>& out);
+
     // Both draw calls must be made inside an active pass.
     void draw_triangles(const GpuMesh& mesh, const mat4& model,
                         const mat4& view_proj);

@@ -139,6 +139,21 @@ quat mirror_rotation(const quat& q) {
     return glm::normalize(quat(q.w, -q.x, -q.y, q.z));
 }
 
+// A VMD camera key's 24-byte interpolation block holds *six* sequential 4-byte
+// curves, in the order X, Y, Z, rotation, distance, FOV. Each 4-byte curve is
+// (x0, x1, y0, y1) — the reference implementation (saba's
+// VMDCameraAnimation::Create) reads ip[0..3] for X, ip[4..7] for Y, and so on,
+// and passes them to SetVMDBezier as (x0, x1, y0, y1). This is a different
+// layout from the bone block's interleaved (control * 4 + channel) bytes.
+void read_camera_interpolation(const std::uint8_t* ip, CameraKey& key) {
+    key.bezier_x = make_bezier(ip[0], ip[2], ip[1], ip[3]);
+    key.bezier_y = make_bezier(ip[4], ip[6], ip[5], ip[7]);
+    key.bezier_z = make_bezier(ip[8], ip[10], ip[9], ip[11]);
+    key.bezier_rot = make_bezier(ip[12], ip[14], ip[13], ip[15]);
+    key.bezier_distance = make_bezier(ip[16], ip[18], ip[17], ip[19]);
+    key.bezier_fov = make_bezier(ip[20], ip[22], ip[21], ip[23]);
+}
+
 }  // namespace
 
 VmdResult parse_vmd(const std::uint8_t* data, std::size_t size) {
@@ -243,9 +258,52 @@ VmdResult parse_vmd(const std::uint8_t* data, std::size_t size) {
             }
         }
     }
-    // Camera / light / shadow / IK sections are not needed for bone animation
-    // and are intentionally not parsed; leaving them unread is safe because
-    // everything before them has already been consumed.
+
+    // --- Camera keyframes (optional) ---
+    // One camera keyframe is 4 + 4 + 12 + 12 + 24 + 4 + 1 = 61 bytes. The
+    // section is optional: a file may stop after the morphs.
+    if (r.remaining() >= 4u) {
+        std::uint32_t camera_count = 0;
+        if (!r.u32(camera_count)) {
+            result.error = r.error();
+            return result;
+        }
+        if (camera_count > (r.remaining() / 61u) + 1u) {
+            result.error = "VMD camera keyframe count exceeds file size";
+            return result;
+        }
+        for (std::uint32_t i = 0; i < camera_count; ++i) {
+            std::uint32_t frame = 0;
+            float distance = 0.0f;
+            vec3 interest;
+            vec3 rotate;
+            std::uint8_t interp[24] = {};
+            std::uint32_t view_angle = 0;
+            std::uint8_t perspective = 0;
+            if (!r.u32(frame) || !r.f32(distance) || !r.vec3f(interest) ||
+                !r.vec3f(rotate) || !r.bytes(interp, sizeof(interp)) ||
+                !r.u32(view_angle) || !r.bytes(&perspective, 1)) {
+                result.error = r.error();
+                return result;
+            }
+
+            CameraKey key;
+            key.frame = static_cast<int>(frame);
+            // The interest point mirrors like any other position. The
+            // orientation is built by Camera::apply_vmd_state from the raw
+            // Euler angles, which it composes as Ry * Rz * Rx — the exact
+            // form the reference implementation (saba's MMDLookAtCamera)
+            // uses — so the angles are stored unmirrored.
+            key.state.interest = mirror_translation(interest);
+            key.state.rotate = rotate;
+            key.state.distance = distance;
+            key.state.fov = static_cast<float>(view_angle);
+            key.state.perspective = (perspective == 0);
+            read_camera_interpolation(interp, key);
+            result.clip.camera_track.keys.push_back(key);
+        }
+        result.clip.camera_track.sort_keys();
+    }
 
     for (BoneTrack& track : result.clip.bone_tracks) {
         track.sort_keys();

@@ -2,9 +2,10 @@
 
 Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
 docking + ImGuizmo + glm). Repo root `MSentara/`, GPLv3. Repo remote is
-`M5Devs/MSentara`. Milestones 0–4B complete: skeleton+viewport, PMX loading +
-skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI, and
-PMX rigid-body physics (hair/cloth). **Per-milestone detail lives in the daily
+`M5Devs/MSentara`. Milestones 0–5 complete: skeleton+viewport, PMX loading +
+skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI,
+PMX rigid-body physics (hair/cloth), and VMD camera tracks + offline PNG
+sequence export. **Per-milestone detail lives in the daily
 logs** (e.g. `2026-11-17.md`); this index keeps only durable, cross-cutting
 facts.
 
@@ -82,12 +83,26 @@ offscreen viewport sample an empty texture while the ImGui UI looked fine.
    when left at 0. Pipelines built at 1 then trip
    `VALIDATE_APIP_ATTACHMENT_SAMPLE_COUNT`. Set `sample_count` explicitly on
    every offscreen colour/depth image.
+3. **A transient buffer may be written only once per frame.** The offline
+   exporter therefore renders one frame per `frame_cb` (no loop), with no
+   `sg_commit()` between the skinning write and the draw — otherwise
+   `VALIDATE_WRITEBUFFERTRANSIENT_WRITE_BEFORE_BIND` /
+   `VALIDATE_DRAW_WRITE_BUFFER_TRANSIENT_MISSING`. Read pixels back *inside* the
+   pass (`end_pass` unbinds the framebuffer).
 
 **Rule: reproduce any sokol problem in a Debug build first.**
 
 ## Cross-cutting gotchas
 
 - sokol_app X11 backend needs `X11` + `Xcursor`/`Xi`/`Xext` linked explicitly.
+- sokol pulls GL headers only under `SOKOL_IMPL`; a TU that needs raw GL
+  (`glReadPixels` in `Renderer.cpp`) must include `<GL/gl.h>` itself.
+- VMD bone keys and camera keys use **different** interpolation-block layouts:
+  bone = interleaved `(control*4+channel)`, camera = six sequential
+  `(x0,x1,y0,y1)` curves. Never share a reader.
+- MSVC's `<direct.h>` `mkdir` takes **one** argument (it is `_mkdir`) and has no
+  `S_ISDIR`; wrap directory creation in a helper rather than calling `::mkdir`
+  directly, or the Windows CI job fails to compile.
 - `glm::perspective` puts -1 in `m[2][3]`, not `m[3][2]`.
 - ImGuizmo must be included **after** `imgui.h`.
 - Inside the viewport arbitrate input with `ImGuizmo::IsOver()/IsUsing()`, NOT
