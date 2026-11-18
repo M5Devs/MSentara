@@ -352,6 +352,67 @@ int FloatTrack::frame_end() const {
     return keys.empty() ? 0 : keys.back().frame;
 }
 
+void VariantTrack::sort_keys() {
+    std::sort(keys.begin(), keys.end(), [](const VariantKey& a,
+                                           const VariantKey& b) {
+        return a.frame < b.frame;
+    });
+}
+
+void VariantTrack::set_key(int frame, int value) {
+    for (VariantKey& k : keys) {
+        if (k.frame == frame) {
+            k.value = value;
+            return;
+        }
+    }
+    keys.push_back(VariantKey{frame, value});
+    sort_keys();
+}
+
+bool VariantTrack::remove_key(int frame) {
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (keys[i].frame == frame) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        }
+    }
+    return false;
+}
+
+bool VariantTrack::has_key(int frame) const {
+    for (const VariantKey& k : keys) {
+        if (k.frame == frame) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int VariantTrack::sample(float frame, int fallback) const {
+    if (keys.empty()) {
+        return fallback;
+    }
+    // Stepped: hold the value of the last key at or before `frame`. Before the
+    // first key there is nothing to hold, so the fallback applies.
+    if (frame < static_cast<float>(keys.front().frame)) {
+        return fallback;
+    }
+    if (frame >= static_cast<float>(keys.back().frame)) {
+        return keys.back().value;
+    }
+    const std::size_t right = span_index(keys, frame);
+    return keys[right - 1].value;
+}
+
+int VariantTrack::frame_start() const {
+    return keys.empty() ? 0 : keys.front().frame;
+}
+
+int VariantTrack::frame_end() const {
+    return keys.empty() ? 0 : keys.back().frame;
+}
+
 Layer2DTrackState Layer2DTrack::sample(float frame,
                                        const Layer2DTrackState& base) const {
     // A channel with no keys leaves its field at the base value, so a track
@@ -369,6 +430,9 @@ Layer2DTrackState Layer2DTrack::sample(float frame,
     if (!opacity.empty()) {
         out.opacity = opacity.sample(frame, base.opacity);
     }
+    if (!variant.empty()) {
+        out.variant = variant.sample(frame, base.variant);
+    }
     return out;
 }
 
@@ -385,6 +449,7 @@ int Layer2DTrack::frame_start() const {
     if (!scale.empty()) consider(scale.frame_start());
     if (!rotation.empty()) consider(rotation.frame_start());
     if (!opacity.empty()) consider(opacity.frame_start());
+    if (!variant.empty()) consider(variant.frame_start());
     return any ? start : 0;
 }
 
@@ -394,6 +459,7 @@ int Layer2DTrack::frame_end() const {
     end = std::max(end, scale.frame_end());
     end = std::max(end, rotation.frame_end());
     end = std::max(end, opacity.frame_end());
+    end = std::max(end, variant.frame_end());
     return end;
 }
 
@@ -613,12 +679,14 @@ bool apply_layer_2d_clip(const AnimationClip& clip, float frame, Scene2D& scene)
             base.rotation = layer.rotation;
             base.scale = layer.scale;
             base.opacity = layer.opacity;
+            base.variant = layer.active_variant;
 
             const Layer2DTrackState sampled = track.sample(frame, base);
             layer.position = sampled.position;
             layer.rotation = sampled.rotation;
             layer.scale = sampled.scale;
             layer.opacity = sampled.opacity;
+            layer.active_variant = sampled.variant;
             applied = true;
             break;
         }

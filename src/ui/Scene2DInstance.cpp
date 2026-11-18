@@ -51,9 +51,10 @@ LoadedImage load_layer_image(const std::string& path, Renderer& renderer) {
 
 LayerId Scene2DInstance::add_group(const std::string& name, LayerId parent) {
     const LayerId id = scene_.add_layer(name, parent);
-    // Keep the texture vector index-aligned with the layer vector; a group has
-    // no image, so its slot holds an invalid handle.
+    // Keep the texture vectors index-aligned with the layer vector; a group has
+    // no image, so its slots stay empty.
     textures_.push_back(GpuTexture{});
+    variant_textures_.emplace_back();
     return id;
 }
 
@@ -78,6 +79,7 @@ LayerId Scene2DInstance::add_layer_from_image(const std::string& name,
 
 bool Scene2DInstance::set_layer_image(LayerId id, const std::string& path,
                                       Renderer& renderer) {
+    ensure_texture_slots();
     Layer2D* layer = scene_.find(id);
     if (layer == nullptr) {
         return false;
@@ -93,6 +95,106 @@ bool Scene2DInstance::set_layer_image(LayerId id, const std::string& path,
     return true;
 }
 
+bool Scene2DInstance::add_layer_variant(LayerId id, const std::string& name,
+                                        const std::string& path,
+                                        Renderer& renderer) {
+    ensure_texture_slots();
+    Layer2D* layer = scene_.find(id);
+    if (layer == nullptr || path.empty()) {
+        return false;
+    }
+    const LoadedImage loaded = load_layer_image(path, renderer);
+    if (!loaded.ok) {
+        return false;
+    }
+    layer->variants.push_back(LayerVariant{name, path, loaded.size});
+    variant_textures_[static_cast<std::size_t>(id)].push_back(loaded.texture);
+    // A variant just added becomes the active one so the user sees it, and the
+    // quad resizes to the swapped-in image.
+    layer->active_variant = static_cast<int>(layer->variants.size()) - 1;
+    layer->size = loaded.size;
+    return true;
+}
+
+void Scene2DInstance::ensure_texture_slots() {
+    // Layers can also be appended straight to the core scene (a preset
+    // instantiation), bypassing add_group; grow the texture vectors so every
+    // layer id has a slot and reload/upload stays in bounds.
+    const std::size_t count = scene_.size();
+    if (textures_.size() < count) {
+        textures_.resize(count);
+    }
+    if (variant_textures_.size() < count) {
+        variant_textures_.resize(count);
+    }
+}
+
+void Scene2DInstance::reload_layer_textures(LayerId id, Renderer& renderer) {
+    ensure_texture_slots();
+    Layer2D* layer = scene_.find(id);
+    if (layer == nullptr || id < 0 ||
+        static_cast<std::size_t>(id) >= textures_.size()) {
+        return;
+    }
+    const std::size_t index = static_cast<std::size_t>(id);
+
+    renderer.destroy_texture(textures_[index]);
+    textures_[index] = GpuTexture{};
+    LoadedImage base;
+    if (!layer->image_path.empty()) {
+        base = load_layer_image(layer->image_path, renderer);
+    }
+    if (base.ok) {
+        textures_[index] = base.texture;
+    }
+
+    for (GpuTexture& texture : variant_textures_[index]) {
+        renderer.destroy_texture(texture);
+    }
+    variant_textures_[index].clear();
+    for (LayerVariant& variant : layer->variants) {
+        const LoadedImage loaded = load_layer_image(variant.image_path, renderer);
+        variant_textures_[index].push_back(loaded.texture);
+        if (loaded.ok) {
+            variant.size = loaded.size;
+        }
+    }
+
+    // The quad follows whichever image is active (the variant, if any). The
+    // base and variant sizes were captured above, so no third decode is needed.
+    if (!layer->variants.empty() && layer->active_variant >= 0 &&
+        static_cast<std::size_t>(layer->active_variant) < layer->variants.size()) {
+        layer->size = layer->variants[static_cast<std::size_t>(
+            layer->active_variant)].size;
+    } else if (base.ok) {
+        layer->size = base.size;
+    }
+}
+
+const GpuTexture& Scene2DInstance::texture_for(LayerId id,
+                                               int variant_index) const {
+    static const GpuTexture invalid;
+    if (id < 0 || static_cast<std::size_t>(id) >= textures_.size()) {
+        return invalid;
+    }
+    const std::size_t index = static_cast<std::size_t>(id);
+    if (variant_index >= 0 &&
+        static_cast<std::size_t>(variant_index) <
+            variant_textures_[index].size()) {
+        return variant_textures_[index][static_cast<std::size_t>(variant_index)];
+    }
+    return textures_[index];
+}
+
+const GpuTexture& Scene2DInstance::active_texture(LayerId id) const {
+    const Layer2D* layer = scene_.find(id);
+    if (layer == nullptr) {
+        static const GpuTexture invalid;
+        return invalid;
+    }
+    return texture_for(id, layer->active_variant);
+}
+
 mat4 Scene2DInstance::layer_model_matrix(LayerId id, const Skeleton* skeleton,
                                          const Pose* pose) const {
     const Layer2D* layer = scene_.find(id);
@@ -100,9 +202,10 @@ mat4 Scene2DInstance::layer_model_matrix(LayerId id, const Skeleton* skeleton,
         return mat4(1.0f);
     }
     // The shared quad is unit-sized, so scale it to the image's pixel size
-    // before applying the layer's world transform.
+    // before applying the layer's world transform. active_size() follows the
+    // active variant, so a swapped expression resizes the quad too.
     return scene_.world_matrix(id, skeleton, pose) *
-           glm::scale(mat4(1.0f), vec3(layer->size, 1.0f));
+           glm::scale(mat4(1.0f), vec3(layer->active_size(), 1.0f));
 }
 
 void Scene2DInstance::draw(Renderer& renderer, const GpuMesh& quad,
@@ -114,10 +217,10 @@ void Scene2DInstance::draw(Renderer& renderer, const GpuMesh& quad,
             continue;
         }
         // A group node (no size) has nothing to draw.
-        if (layer->size.x <= 0.0f || layer->size.y <= 0.0f) {
+        if (layer->active_size().x <= 0.0f || layer->active_size().y <= 0.0f) {
             continue;
         }
-        const GpuTexture& texture = textures_[static_cast<std::size_t>(id)];
+        const GpuTexture& texture = active_texture(id);
         // Layer opacity multiplies the tint's alpha; the tint's RGB lets a
         // layer be coloured without touching its image.
         const vec4 tint(layer->tint.r, layer->tint.g, layer->tint.b,
@@ -141,13 +244,16 @@ void Scene2DInstance::draw_ghost_frame(Renderer& renderer, const GpuMesh& quad,
         }
         // A ghost is drawn even at zero layer opacity (the whole point is to
         // show a neighbouring frame), but only when there is geometry to draw.
-        if (layer->size.x <= 0.0f || layer->size.y <= 0.0f) {
+        if (layer->active_size().x <= 0.0f || layer->active_size().y <= 0.0f) {
             continue;
         }
-        const GpuTexture& texture = textures_[static_cast<std::size_t>(id)];
+        // Sample the *ghost* scene's variant (the copy evaluated at that frame),
+        // not the live layer's, so a variant-swap animation ghosts correctly.
+        const GpuTexture& texture = texture_for(id, layer->active_variant);
         renderer.draw_sprite(quad, texture,
                              ghost_scene.world_matrix(id, skeleton, pose) *
-                                 glm::scale(mat4(1.0f), vec3(layer->size, 1.0f)),
+                                 glm::scale(mat4(1.0f),
+                                            vec3(layer->active_size(), 1.0f)),
                              view_proj, tint);
     }
 }
@@ -157,6 +263,12 @@ void Scene2DInstance::clear(Renderer& renderer) {
         renderer.destroy_texture(texture);
     }
     textures_.clear();
+    for (std::vector<GpuTexture>& variants : variant_textures_) {
+        for (GpuTexture& texture : variants) {
+            renderer.destroy_texture(texture);
+        }
+    }
+    variant_textures_.clear();
     scene_.clear();
     clip_ = AnimationClip{};
 }

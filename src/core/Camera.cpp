@@ -110,6 +110,21 @@ mat4 Camera::projection_matrix_2d(float aspect) const {
                       -1.0f, 1.0f);
 }
 
+vec2 Camera::screen_to_world_2d(const vec2& normalized, float aspect) const {
+    if (aspect <= 0.0f) {
+        aspect = 1.0f;
+    }
+    const float half_h = std::max(distance, 0.001f);
+    const float half_w = half_h * aspect;
+    // Normalised (0..1) -> offset from the view centre. x maps left..right onto
+    // -1..+1. y maps top..bottom onto -1..+1 as well, and since the ortho box
+    // already puts target.y - half_h at the top of the viewport, the two
+    // negations cancel: world_y = target.y + ny * half_h.
+    const float nx = normalized.x * 2.0f - 1.0f;
+    const float ny = normalized.y * 2.0f - 1.0f;
+    return vec2(target.x + nx * half_w, target.y + ny * half_h);
+}
+
 void Camera::orbit(float dx, float dy, float sensitivity) {
     yaw -= dx * sensitivity;
     pitch += dy * sensitivity;

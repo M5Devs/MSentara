@@ -369,6 +369,34 @@ void Editor::draw_main_menu_bar() {
             }
         }
         ImGui::Separator();
+        // Reusable 2D character presets: export the selected layer and its
+        // subtree as a .mschar2d, or drop a saved one into the scene. The app
+        // performs the file I/O and re-decodes the images.
+        ImGui::TextUnformatted("2D Character Preset (.mschar2d)");
+        ImGui::SetNextItemWidth(320.0f);
+        ImGui::InputText("##preset_path", preset_path_buffer_,
+                         sizeof(preset_path_buffer_));
+        const bool can_export_preset =
+            mode_ == EditorMode::TwoD && scene2d_ != nullptr &&
+            scene2d_->scene().selected_layer() != nullptr;
+        ImGui::BeginDisabled(!can_export_preset);
+        if (ImGui::Button("Export Preset")) {
+            if (preset_path_buffer_[0] != '\0') {
+                PresetRequest request;
+                request.root = scene2d_->scene().selected();
+                request.path = preset_path_buffer_;
+                request.name = scene2d_->scene().selected_layer()->name;
+                request_export_preset(request);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Import Preset")) {
+            if (preset_path_buffer_[0] != '\0') {
+                request_import_preset(preset_path_buffer_);
+            }
+        }
+        ImGui::Separator();
         // Offline rendering is a desktop-only feature: the web build has no
         // synchronous framebuffer readback, so the entry is hidden there.
 #if !defined(__EMSCRIPTEN__)
@@ -471,8 +499,14 @@ void Editor::draw_viewport_panel(const RenderTarget& viewport) {
         }
 
         // In 2D mode the gizmo manipulates the selected layer's pixel-space
-        // world matrix; the 3D paths below are skipped entirely.
+        // world matrix; the 3D paths below are skipped entirely. A plain click
+        // in the viewport (not on a gizmo handle) hit-tests the layers and
+        // selects the top-most one under the cursor.
         if (mode_ == EditorMode::TwoD) {
+            if (viewport_hovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()) {
+                pick_layer_at(origin.x, origin.y, avail.x, avail.y);
+            }
             if (scene2d_ != nullptr && scene2d_->scene().selected_layer() !=
                                           nullptr) {
                 draw_layer2d_gizmo(origin.x, origin.y, avail.x, avail.y);
@@ -1135,6 +1169,10 @@ Project Editor::capture_project(const std::string& model_path,
             out.visible = layer.visible;
             out.bound_bone = layer.bound_bone;
             out.bind_offset = layer.bind_offset;
+            for (const LayerVariant& variant : layer.variants) {
+                out.variants.push_back({variant.name, variant.image_path});
+            }
+            out.active_variant = layer.active_variant;
             project.layers_2d.push_back(std::move(out));
         }
 
@@ -1170,6 +1208,12 @@ Project Editor::capture_project(const std::string& model_path,
             copy_vec2(track.scale, out.scale);
             copy_float(track.rotation, out.rotation);
             copy_float(track.opacity, out.opacity);
+            for (const VariantKey& k : track.variant.keys) {
+                ProjectKey2D key;
+                key.frame = k.frame;
+                key.value_int = k.value;
+                out.variant.push_back(key);
+            }
             project.layer2d_tracks.push_back(std::move(out));
         }
     }
@@ -1297,6 +1341,7 @@ void Editor::draw_layer2d_properties() {
         ImGui::End();
         return;
     }
+    const LayerId layer_id = scene2d->selected();
 
     char name_buf[128];
     std::snprintf(name_buf, sizeof(name_buf), "%s", layer->name.c_str());
@@ -1310,8 +1355,9 @@ void Editor::draw_layer2d_properties() {
     ImGui::TextDisabled("Image: %s",
                         layer->image_path.empty() ? "(group, no image)"
                                                   : layer->image_path.c_str());
-    ImGui::TextDisabled("Size: %.0f x %.0f px", static_cast<double>(layer->size.x),
-                        static_cast<double>(layer->size.y));
+    ImGui::TextDisabled("Size: %.0f x %.0f px",
+                        static_cast<double>(layer->active_size().x),
+                        static_cast<double>(layer->active_size().y));
 
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1364,6 +1410,65 @@ void Editor::draw_layer2d_properties() {
         ImGui::ColorEdit4("##tint", &layer->tint.x);
 
         ImGui::Checkbox("Visible", &layer->visible);
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Sprite Variants", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // A layer may hold several named images ("closed"/"open"/"blink") and
+        // swap between them at runtime or via a stepped animation track. The
+        // combo is the manual switch; the animation section keys it over time.
+        ImGui::TextDisabled("Expressions / states for this layer");
+
+        const char* preview = layer->variants.empty()
+                                  ? "(single image)"
+                                  : layer->variants[static_cast<std::size_t>(
+                                        std::max(0, std::min(
+                                            layer->active_variant,
+                                            static_cast<int>(layer->variants.size()) - 1)))]
+                                        .name.c_str();
+        ImGui::TextUnformatted("Active");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##active_variant", preview)) {
+            if (layer->variants.empty()) {
+                ImGui::TextDisabled("(no variants)");
+            }
+            for (std::size_t i = 0; i < layer->variants.size(); ++i) {
+                const bool selected = (static_cast<int>(i) == layer->active_variant);
+                if (ImGui::Selectable(layer->variants[i].name.c_str(), selected)) {
+                    set_layer_variant(layer_id, static_cast<int>(i));
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (!layer->variants.empty()) {
+            ImGui::TextDisabled("%zu variant(s)", layer->variants.size());
+        }
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Add variant");
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputTextWithHint("##variant_name", "name",
+                                 variant_name_buffer_, sizeof(variant_name_buffer_));
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-90.0f);
+        ImGui::InputTextWithHint("##variant_path", "image path (PNG/JPG)",
+                                 variant_path_buffer_, sizeof(variant_path_buffer_));
+        ImGui::SameLine();
+        if (ImGui::Button("Add")) {
+            if (variant_path_buffer_[0] != '\0') {
+                VariantRequest request;
+                request.layer = layer_id;
+                request.name = (variant_name_buffer_[0] != '\0')
+                                   ? variant_name_buffer_
+                                   : std::string("variant");
+                request.path = variant_path_buffer_;
+                request_add_variant(request);
+                variant_name_buffer_[0] = '\0';
+                variant_path_buffer_[0] = '\0';
+            }
+        }
     }
 
     ImGui::Spacing();
@@ -1429,6 +1534,10 @@ void Editor::draw_layer2d_properties() {
                     "%zu pos / %zu scale / %zu rot / %zu opacity keys",
                     track->position.keys.size(), track->scale.keys.size(),
                     track->rotation.keys.size(), track->opacity.keys.size());
+                if (!track->variant.empty()) {
+                    ImGui::TextDisabled("%zu variant keys",
+                                        track->variant.keys.size());
+                }
             } else {
                 ImGui::TextDisabled("(no keys for this layer)");
             }
@@ -1441,6 +1550,67 @@ void Editor::draw_layer2d_properties() {
     }
 
     ImGui::End();
+}
+
+// Hit-tests a click against the 2D layers. The viewport panel draws the sprite
+// pass with the shared 2D camera projection (identity view), so the inverse of
+// that projection turns the cursor's normalised panel position into the same
+// pixel-space world point the layers are drawn in. The core scene then picks
+// the top-most layer whose quad contains it.
+bool Editor::pick_layer_at(float viewport_origin_x, float viewport_origin_y,
+                           float width, float height) {
+    if (scene2d_ == nullptr || width <= 1.0f || height <= 1.0f) {
+        return false;
+    }
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const float u = (mouse.x - viewport_origin_x) / width;
+    const float v = (mouse.y - viewport_origin_y) / height;
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+        return false;
+    }
+    const float aspect = width / height;
+    const vec2 world = camera_.screen_to_world_2d(vec2(u, v), aspect);
+
+    // A loaded model's skeleton drives bone-bound layers, so pass its pose so a
+    // bound cutout is picked where it is drawn.
+    const Skeleton* skeleton = nullptr;
+    const Pose* pose = nullptr;
+    if (model_ != nullptr && model_->valid()) {
+        skeleton = &model_->model().skeleton;
+        pose = &model_->pose();
+    }
+    Scene2D& scene2d = scene2d_->scene();
+    const LayerId hit = scene2d.pick_layer(world, skeleton, pose);
+    if (hit != kInvalidLayer) {
+        scene2d.select(hit);
+        return true;
+    }
+    return false;
+}
+
+// Switches a layer to a variant and resizes its quad to that variant's image.
+// The size was captured when the image was decoded, so the swap needs no
+// renderer here; the app re-evaluates the clip and the next draw samples the
+// new texture.
+void Editor::set_layer_variant(LayerId id, int variant_index) {
+    if (scene2d_ == nullptr) {
+        return;
+    }
+    Layer2D* layer = scene2d_->scene().find(id);
+    if (layer == nullptr || layer->variants.empty()) {
+        return;
+    }
+    if (variant_index < 0 ||
+        static_cast<std::size_t>(variant_index) >= layer->variants.size()) {
+        return;
+    }
+    layer->active_variant = variant_index;
+    const LayerVariant& variant =
+        layer->variants[static_cast<std::size_t>(variant_index)];
+    if (variant.size.x > 0.0f && variant.size.y > 0.0f) {
+        layer->size = variant.size;
+    }
+    layers2d_changed_ = true;
 }
 
 void Editor::draw_layer2d_gizmo(float origin_x, float origin_y, float width,
@@ -1513,6 +1683,11 @@ void Editor::key_selected_layer2d() {
     track.scale.set_key(frame, layer->scale);
     track.rotation.set_key(frame, layer->rotation);
     track.opacity.set_key(frame, layer->opacity);
+    // The variant is keyed only for a layer that has variants, so a plain layer
+    // does not grow a stepped channel that would pin it to index 0.
+    if (!layer->variants.empty()) {
+        track.variant.set_key(frame, layer->active_variant);
+    }
     layers2d_changed_ = true;
     // The timeline's end frame follows the keys so a keyed frame is reachable.
     timeline_.frame_end = std::max(timeline_.frame_end, frame);
@@ -1535,6 +1710,7 @@ void Editor::delete_key_selected_layer2d() {
         track.scale.remove_key(frame);
         track.rotation.remove_key(frame);
         track.opacity.remove_key(frame);
+        track.variant.remove_key(frame);
         break;
     }
     layers2d_changed_ = true;

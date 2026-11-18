@@ -59,6 +59,45 @@ mat4 Layer2D::pivot_matrix() const {
     return m;
 }
 
+const std::string& Layer2D::active_image_path() const {
+    if (!variants.empty()) {
+        const std::size_t index =
+            (active_variant >= 0 &&
+             static_cast<std::size_t>(active_variant) < variants.size())
+                ? static_cast<std::size_t>(active_variant)
+                : 0u;
+        return variants[index].image_path;
+    }
+    return image_path;
+}
+
+const std::string& Layer2D::active_variant_name() const {
+    static const std::string empty;
+    if (!variants.empty()) {
+        const std::size_t index =
+            (active_variant >= 0 &&
+             static_cast<std::size_t>(active_variant) < variants.size())
+                ? static_cast<std::size_t>(active_variant)
+                : 0u;
+        return variants[index].name;
+    }
+    return empty;
+}
+
+vec2 Layer2D::active_size() const {
+    if (!variants.empty()) {
+        const std::size_t index =
+            (active_variant >= 0 &&
+             static_cast<std::size_t>(active_variant) < variants.size())
+                ? static_cast<std::size_t>(active_variant)
+                : 0u;
+        if (variants[index].size.x > 0.0f && variants[index].size.y > 0.0f) {
+            return variants[index].size;
+        }
+    }
+    return size;
+}
+
 LayerId Scene2D::add_layer(const std::string& name, LayerId parent) {
     Layer2D layer;
     layer.name = name;
@@ -166,6 +205,37 @@ std::vector<LayerId> Scene2D::draw_order() const {
                                 layers_[static_cast<std::size_t>(b)].z_order;
                      });
     return order;
+}
+
+LayerId Scene2D::pick_layer(const vec2& world_point, const Skeleton* skeleton,
+                            const Pose* pose) const {
+    // Walk the draw order backwards: the last-drawn layer is the top-most, so
+    // the first hit found is what the user sees on top. A group node (zero
+    // size) and an invisible or fully transparent layer are not clickable, the
+    // same rule the renderer uses to decide whether to draw them.
+    const std::vector<LayerId> order = draw_order();
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        const LayerId id = *it;
+        const Layer2D* layer = find(id);
+        if (layer == nullptr || !layer->visible) {
+            continue;
+        }
+        const vec2 size = layer->active_size();
+        if (size.x <= 0.0f || size.y <= 0.0f) {
+            continue;
+        }
+        // Map the point into the layer's local (pre-scale) quad space through
+        // the inverse world matrix. The drawn quad spans [0, size] with the
+        // unit quad's origin at the layer's top-left, so the test is a simple
+        // axis-aligned range check in that space.
+        const mat4 inv = glm::inverse(world_matrix(id, skeleton, pose));
+        const vec4 local = inv * vec4(world_point.x, world_point.y, 0.0f, 1.0f);
+        if (local.x >= 0.0f && local.x <= size.x && local.y >= 0.0f &&
+            local.y <= size.y) {
+            return id;
+        }
+    }
+    return kInvalidLayer;
 }
 
 void Scene2D::select(LayerId id) {

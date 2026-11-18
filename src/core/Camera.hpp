@@ -86,6 +86,14 @@ public:
     // space the manipulator edits. The 2D pass uses an identity view matrix.
     mat4 projection_matrix_2d(float aspect) const;
 
+    // The inverse of projection_matrix_2d for a point given in *normalised*
+    // viewport coordinates: (0,0) is the top-left corner of the viewport and
+    // (1,1) the bottom-right, matching how ImGui reports the mouse within a
+    // panel. Returns the pixel-space world point under the cursor, so the 2D
+    // viewport can hit-test a click against the layers. The view matrix is
+    // identity in 2D mode, so this is exactly the world point.
+    vec2 screen_to_world_2d(const vec2& normalized, float aspect) const;
+
     // Rotates the camera around the target. `dx`/`dy` are in pixels.
     void orbit(float dx, float dy, float sensitivity = 0.3f);
 

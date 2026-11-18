@@ -2,13 +2,14 @@
 
 Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
 docking + ImGuizmo + glm). Repo root `MSentara/`, GPLv3. Repo remote is
-`M5Devs/MSentara`. Milestones 0–6B complete: skeleton+viewport, PMX loading +
+`M5Devs/MSentara`. Milestones 0–6C complete: skeleton+viewport, PMX loading +
 skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI,
 PMX rigid-body physics (hair/cloth), VMD camera tracks + offline PNG
-sequence export, a 2D cutout animation mode, and **M6B: 2D bone binding + a
-keyframe easing editor + onion skinning**. **Per-milestone detail lives
-in the daily logs** (e.g. `2026-11-17.md`); this index keeps only durable,
-cross-cutting facts.
+sequence export, a 2D cutout animation mode, **M6B: 2D bone binding + a
+keyframe easing editor + onion skinning**, and **M6C: 2D sprite variants +
+viewport layer picking + `.mschar2d` character presets**. **Per-milestone
+detail lives in the daily logs** (e.g. `2026-11-17.md`); this index keeps only
+durable, cross-cutting facts.
 
 ## Workflow rule — READ THIS FIRST
 
@@ -146,27 +147,53 @@ offscreen viewport sample an empty texture while the ImGui UI looked fine.
   asserts the exported frame count (`--export-start/--export-end` make the
   count deterministic). Export dirs `out-*/` are gitignored.
 - **2D bone binding (M6B)**: `Layer2D::bound_bone` (a bone *name*) +
-  `bind_offset` (vec2, in the bone's local frame). When the name resolves on
-  the passed skeleton+pose, the bone's posed `global` **replaces** the layer's
-  parent chain; otherwise it falls back to the parent chain (empty/unknown name
-  is not an error). Threaded through `Scene2D::world_matrix(id, skel, pose)` /
-  `pivot_world_matrix` / `pivot_base_matrix` (all default the pointers to
-  nullptr, so existing 1-arg callers still compile). The gizmo disables editing
-  for a bound layer (the bone drives it). Persisted in `ProjectLayer2D` as
-  `bound_bone`/`bind_offset`, **written only when bound** so old files are
-  byte-identical. 2D mode also drives the model's animation now (so bound bones
-  follow the timeline); a bound ghost in onion skinning keeps the *current*
-  pose (documented).
-- **Onion skinning (M6B)**: pure maths in `src/core/OnionSkin.{hpp,cpp}`
-  (`onion_skin_window` = far→near per side, clamped to the timeline, current
-  frame excluded; `onion_ghost_tint` = past cool blue / future warm orange,
-  alpha fading with distance). Settings live on the Editor; the app draws the
-  ghosts in `render_scene_into_pass(true)` — the **export path passes `false`**
-  so an offline sequence is the current frame alone.
-- **Keyframe easing editor (M6B)**: one `draw_bezier_editor()` (anonymous ns in
-  `Editor.cpp`) with preset buttons + an interactive 0..1 canvas (drag either
-  interior control point; `Editor::easing_drag_handle_` holds the drag across
-  frames). Works in 2D (selected layer's channel via `active_easing_curve()`)
-  and 3D (selected bone's key: `easing_bone_channel_` 0..3 = X/Y/Z/Rotation,
-  via the new non-const `ModelInstance::clip()` — guard with `find_bone` first
-  because `AnimationClip::bone()` creates a track when missing).
+  `bind_offset` (vec2, bone-local). A resolvable name **replaces** the layer's
+  parent chain with the bone's posed `global`; empty/unknown falls back (not an
+  error). Threaded through `Scene2D::world_matrix/pivot_*` (pointers default
+  nullptr). The gizmo disables editing for a bound layer. Persisted as
+  `bound_bone`/`bind_offset`, written only when bound.
+- **Onion skinning (M6B)**: pure maths in `src/core/OnionSkin.*`
+  (`onion_skin_window` far→near, clamped, current excluded; `onion_ghost_tint`
+  past blue / future orange with distance falloff). The app draws ghosts in
+  `render_scene_into_pass(true)`; the **export path passes `false`**.
+- **Keyframe easing editor (M6B)**: `draw_bezier_editor()` (Editor.cpp anon ns),
+  2D (selected layer channel) + 3D (selected bone X/Y/Z/Rotation via the
+  non-const `ModelInstance::clip()` — guard with `find_bone` first because
+  `AnimationClip::bone()` creates a track when missing).
+
+## Milestone 6C — 2D sprite variants, layer picking, character presets (v0.7.0)
+
+Full detail in `2026-11-17.md` (M6C). Durable facts:
+- **`LayerVariant{name, image_path, size}`** on `Layer2D` + `variants`/
+  `active_variant`; `active_image_path()` and **`active_size()`** (variant size
+  when known, else the layer's `size`) are the single source of truth.
+  Out-of-range `active_variant` falls back to index 0 everywhere.
+- **`active_size()` drives rendering and picking**: `layer_model_matrix`,
+  `draw`, `draw_ghost_frame`, `pick_layer` all scale the unit quad by it, so a
+  variant swap resizes the quad in the same frame. Onion ghosts must sample
+  `texture_for(id, ghost_layer->active_variant)`, NOT `active_texture` (which
+  reads the live layer).
+- **`Scene2DInstance::ensure_texture_slots()`** resizes the texture vectors to
+  `scene_.size()`. A preset instantiation appends layers straight to the core
+  scene (bypassing `add_group`); without this self-heal, reload/upload reads out
+  of bounds (it segfaulted the preset smoke).
+- **`VariantTrack` is stepped**, not interpolated (holds at the key at/before
+  the frame, jumps at each key) — unlike the Bezier tracks. Project key is
+  `value_int`; `interp` is never written for it.
+- **`Scene2D::pick_layer(world, skeleton, pose)`** iterates `draw_order()`
+  reversed (top-most first) and inverts each layer's `world_matrix`.
+  `Editor::pick_layer_at` maps the click through
+  `Camera::screen_to_world_2d` (screen y down, clip y up → `v = 0.5 - clip.y/2`).
+- **`.mschar2d` presets**: `Char2DPreset{name, layers}` (each layer a
+  `ProjectLayer2D`), header `format:"msentara-char2d"`/`version:1` (mismatch
+  rejected). `collect_char2d_preset` walks the subtree (cycle-guarded);
+  `instantiate_char2d_preset` remaps parents and makes names unique
+  (`head`→`head.2`).
+- **Project format**: a plain single-image layer emits **neither** `variants`
+  nor `active_variant` (byte-identical to M6); `layer2d_tracks` gain a stepped
+  `variant` array of `value_int` keys.
+- **CLI**: `--variant <layer>:<name>:<path>` (repeatable), `--preset <file>`;
+  env `MSENTARA_PRESET` / `MSENTARA_VARIANT`.
+- **Verify**: 12/12 ctest, `test_2d` 252 checks / 0 fail (107 new), gcc+clang+
+  ASan+UBSan clean, `-g0 -j 1`; headless Xvfb+llvmpipe smokes (image+variant+
+  export, preset import+variant+export, 3D export).

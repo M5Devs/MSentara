@@ -663,6 +663,412 @@ void test_onion_ghost_tint_direction_and_fade() {
     MS_CHECK_NEAR(past_near.a, 0.5f);
 }
 
+// --- M6C: sprite variants ------------------------------------------------
+
+void test_active_image_path_follows_variant() {
+    Layer2D layer;
+    layer.image_path = "base.png";
+    // A plain layer draws its own image.
+    MS_CHECK(layer.active_image_path() == "base.png");
+    MS_CHECK(layer.active_variant_name().empty());
+
+    layer.variants.push_back({"closed", "closed.png", vec2(32.0f, 32.0f)});
+    layer.variants.push_back({"open", "open.png", vec2(48.0f, 32.0f)});
+    layer.active_variant = 1;
+    MS_CHECK(layer.active_image_path() == "open.png");
+    MS_CHECK(layer.active_variant_name() == "open");
+    MS_CHECK_NEAR(layer.active_size(), vec2(48.0f, 32.0f));
+
+    // An out-of-range index falls back to the first variant rather than
+    // reading out of bounds.
+    layer.active_variant = 99;
+    MS_CHECK(layer.active_image_path() == "closed.png");
+    MS_CHECK_NEAR(layer.active_size(), vec2(32.0f, 32.0f));
+
+    // A variant with no captured size falls back to the layer's own size.
+    layer.variants[0].size = vec2(0.0f, 0.0f);
+    layer.active_variant = 0;
+    layer.size = vec2(10.0f, 20.0f);
+    MS_CHECK_NEAR(layer.active_size(), vec2(10.0f, 20.0f));
+}
+
+void test_variant_track_stepped() {
+    VariantTrack track;
+    track.set_key(0, 0);
+    track.set_key(10, 1);
+    track.set_key(20, 2);
+
+    // Stepped: the value holds until the next key, then jumps.
+    MS_CHECK(track.sample(0.0f) == 0);
+    MS_CHECK(track.sample(5.0f) == 0);
+    MS_CHECK(track.sample(9.99f) == 0);
+    MS_CHECK(track.sample(10.0f) == 1);
+    MS_CHECK(track.sample(19.9f) == 1);
+    MS_CHECK(track.sample(20.0f) == 2);
+    MS_CHECK(track.sample(1000.0f) == 2);
+    // Before the first key the fallback applies.
+    MS_CHECK(track.sample(-5.0f, 7) == 7);
+
+    // set_key replaces an existing frame's value; remove_key drops it.
+    track.set_key(10, 5);
+    MS_CHECK(track.keys.size() == 3);
+    MS_CHECK(track.sample(15.0f) == 5);
+    MS_CHECK(track.remove_key(10));
+    MS_CHECK(!track.remove_key(10));
+    MS_CHECK(track.sample(15.0f) == 0);
+    MS_CHECK(track.frame_start() == 0);
+    MS_CHECK(track.frame_end() == 20);
+}
+
+void test_variant_track_out_of_order_insert_is_sorted() {
+    VariantTrack track;
+    track.set_key(30, 3);
+    track.set_key(0, 0);
+    track.set_key(15, 1);
+    MS_CHECK(track.keys.size() == 3);
+    MS_CHECK(track.keys[0].frame == 0);
+    MS_CHECK(track.keys[1].frame == 15);
+    MS_CHECK(track.keys[2].frame == 30);
+    MS_CHECK(track.sample(20.0f) == 1);
+}
+
+void test_layer_2d_track_samples_variant() {
+    Layer2DTrack track;
+    track.name = "mouth";
+    track.variant.set_key(0, 0);
+    track.variant.set_key(12, 1);
+
+    Layer2DTrackState base;
+    base.variant = 5;  // the layer's authored variant
+    // The track overrides the variant; a channel with no keys leaves the base.
+    MS_CHECK(track.sample(6.0f, base).variant == 0);
+    MS_CHECK(track.sample(12.0f, base).variant == 1);
+
+    Layer2DTrack other;
+    other.name = "mouth";
+    other.position.set_key(0, vec2(1.0f, 2.0f));
+    MS_CHECK(other.sample(0.0f, base).variant == 5);
+}
+
+void test_apply_layer_2d_clip_writes_variant() {
+    Scene2D scene;
+    const LayerId id = scene.add_layer("mouth");
+    scene.find(id)->variants.push_back({"closed", "closed.png", vec2(10.0f, 10.0f)});
+    scene.find(id)->variants.push_back({"open", "open.png", vec2(10.0f, 10.0f)});
+
+    AnimationClip clip;
+    Layer2DTrack& track = clip.layer_2d("mouth");
+    track.variant.set_key(0, 0);
+    track.variant.set_key(24, 1);
+
+    apply_layer_2d_clip(clip, 0.0f, scene);
+    MS_CHECK(scene.find(id)->active_variant == 0);
+    MS_CHECK(scene.find(id)->active_image_path() == "closed.png");
+
+    apply_layer_2d_clip(clip, 24.0f, scene);
+    MS_CHECK(scene.find(id)->active_variant == 1);
+    MS_CHECK(scene.find(id)->active_image_path() == "open.png");
+}
+
+void test_clip_frame_end_includes_variant() {
+    AnimationClip clip;
+    Layer2DTrack& track = clip.layer_2d("mouth");
+    track.variant.set_key(5, 0);
+    track.variant.set_key(42, 1);
+    MS_CHECK(clip.frame_end() == 42);
+}
+
+// --- M6C: 2D hit-testing --------------------------------------------------
+
+void test_pick_layer_returns_top_most() {
+    Scene2D s;
+    const LayerId back = s.add_layer("back");
+    s.find(back)->size = vec2(100.0f, 100.0f);
+    s.find(back)->z_order = 0;
+
+    const LayerId front = s.add_layer("front");
+    s.find(front)->size = vec2(50.0f, 50.0f);
+    s.find(front)->position = vec2(25.0f, 25.0f);
+    s.find(front)->z_order = 1;
+
+    // A point inside both quads picks the front layer (higher z draws later).
+    MS_CHECK(s.pick_layer(vec2(30.0f, 30.0f)) == front);
+    // A point only inside the back quad picks the back layer.
+    MS_CHECK(s.pick_layer(vec2(5.0f, 5.0f)) == back);
+    // A point outside both misses.
+    MS_CHECK(s.pick_layer(vec2(500.0f, 500.0f)) == kInvalidLayer);
+}
+
+void test_pick_layer_respects_transform() {
+    Scene2D s;
+    const LayerId id = s.add_layer("box");
+    s.find(id)->size = vec2(100.0f, 100.0f);
+    s.find(id)->position = vec2(200.0f, 0.0f);
+    s.find(id)->scale = vec2(2.0f, 2.0f);
+
+    // The quad spans [200, 400] x [0, 200] in world space.
+    MS_CHECK(s.pick_layer(vec2(250.0f, 50.0f)) == id);
+    MS_CHECK(s.pick_layer(vec2(150.0f, 50.0f)) == kInvalidLayer);
+    MS_CHECK(s.pick_layer(vec2(410.0f, 50.0f)) == kInvalidLayer);
+}
+
+void test_pick_layer_rotation() {
+    Scene2D s;
+    const LayerId id = s.add_layer("box");
+    s.find(id)->size = vec2(100.0f, 100.0f);
+    // Rotate 90 degrees about the top-left corner: the quad then spans
+    // [-100, 0] x [0, 100] in world space.
+    s.find(id)->rotation = 90.0f;
+    MS_CHECK(s.pick_layer(vec2(-50.0f, 50.0f)) == id);
+    MS_CHECK(s.pick_layer(vec2(50.0f, 50.0f)) == kInvalidLayer);
+}
+
+void test_pick_layer_skips_invisible_and_groups() {
+    Scene2D s;
+    const LayerId group = s.add_layer("group");  // zero size
+    const LayerId hidden = s.add_layer("hidden");
+    s.find(hidden)->size = vec2(100.0f, 100.0f);
+    s.find(hidden)->visible = false;
+
+    MS_CHECK(s.pick_layer(vec2(10.0f, 10.0f)) == kInvalidLayer);
+    s.find(hidden)->visible = true;
+    MS_CHECK(s.pick_layer(vec2(10.0f, 10.0f)) == hidden);
+    (void)group;
+}
+
+void test_pick_layer_through_parent_chain() {
+    Scene2D s;
+    const LayerId parent = s.add_layer("parent");
+    s.find(parent)->position = vec2(100.0f, 0.0f);
+    const LayerId child = s.add_layer("child", parent);
+    s.find(child)->size = vec2(50.0f, 50.0f);
+    s.find(child)->position = vec2(20.0f, 0.0f);
+
+    // The child's world origin is at (120, 0), so its quad spans [120, 170].
+    MS_CHECK(s.pick_layer(vec2(130.0f, 10.0f)) == child);
+    MS_CHECK(s.pick_layer(vec2(110.0f, 10.0f)) == kInvalidLayer);
+}
+
+void test_pick_layer_bone_bound() {
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+
+    Scene2D s;
+    const LayerId id = s.add_layer("arm_cutout");
+    s.find(id)->size = vec2(40.0f, 40.0f);
+    s.find(id)->bound_bone = "arm";  // arm's global origin is at (100, 0)
+
+    // The cutout is drawn at the bone's origin, so a click there hits it.
+    MS_CHECK(s.pick_layer(vec2(110.0f, 10.0f), &skeleton, &pose) == id);
+    MS_CHECK(s.pick_layer(vec2(10.0f, 10.0f), &skeleton, &pose) == kInvalidLayer);
+}
+
+// --- M6C: camera inverse --------------------------------------------------
+
+void test_screen_to_world_2d_inverts_projection() {
+    Camera cam;
+    cam.target = vec3(0.0f, 0.0f, 0.0f);
+    cam.distance = 100.0f;
+    const float aspect = 2.0f;
+
+    // The viewport centre maps to the target.
+    MS_CHECK_NEAR(cam.screen_to_world_2d(vec2(0.5f, 0.5f), aspect),
+                  vec2(0.0f, 0.0f));
+    // The top-left corner is (target - half_w, target - half_h).
+    MS_CHECK_NEAR(cam.screen_to_world_2d(vec2(0.0f, 0.0f), aspect),
+                  vec2(-200.0f, -100.0f));
+    // The bottom-right corner is (target + half_w, target + half_h).
+    MS_CHECK_NEAR(cam.screen_to_world_2d(vec2(1.0f, 1.0f), aspect),
+                  vec2(200.0f, 100.0f));
+
+    // Round-trip against the projection: a world point projected to clip then
+    // to normalised panel coordinates maps back to itself. Screen y increases
+    // downward while clip y increases upward, so y is flipped here.
+    const vec2 world(50.0f, 25.0f);
+    const mat4 proj = cam.projection_matrix_2d(aspect);
+    const vec4 clip = proj * vec4(world.x, world.y, 0.0f, 1.0f);
+    const vec2 normalized((clip.x * 0.5f) + 0.5f, 0.5f - (clip.y * 0.5f));
+    MS_CHECK_NEAR(cam.screen_to_world_2d(normalized, aspect), world);
+}
+
+// --- M6C: project round-trip with variants --------------------------------
+
+void test_project_round_trip_variants() {
+    Project p;
+    p.editor_mode = "2d";
+
+    ProjectLayer2D layer;
+    layer.name = "mouth";
+    layer.image_path = "base.png";
+    layer.variants.push_back({"closed", "closed.png"});
+    layer.variants.push_back({"open", "open.png"});
+    layer.active_variant = 1;
+    p.layers_2d.push_back(layer);
+
+    ProjectLayer2DTrack track;
+    track.name = "mouth";
+    ProjectKey2D k0;
+    k0.frame = 0;
+    k0.value_int = 0;
+    ProjectKey2D k1;
+    k1.frame = 24;
+    k1.value_int = 1;
+    track.variant = {k0, k1};
+    p.layer2d_tracks.push_back(track);
+
+    const std::string text = project_to_json(p);
+    Project loaded;
+    std::string error;
+    MS_CHECK_MSG(project_from_json(text, loaded, error), error);
+
+    MS_CHECK(loaded.layers_2d.size() == 1);
+    MS_CHECK(loaded.layers_2d[0].variants.size() == 2);
+    MS_CHECK(loaded.layers_2d[0].variants[0].name == "closed");
+    MS_CHECK(loaded.layers_2d[0].variants[0].image_path == "closed.png");
+    MS_CHECK(loaded.layers_2d[0].variants[1].name == "open");
+    MS_CHECK(loaded.layers_2d[0].active_variant == 1);
+    MS_CHECK(loaded.layer2d_tracks.size() == 1);
+    MS_CHECK(loaded.layer2d_tracks[0].variant.size() == 2);
+    MS_CHECK(loaded.layer2d_tracks[0].variant[0].value_int == 0);
+    MS_CHECK(loaded.layer2d_tracks[0].variant[1].frame == 24);
+    MS_CHECK(loaded.layer2d_tracks[0].variant[1].value_int == 1);
+}
+
+void test_project_omits_variants_when_absent() {
+    Project p;
+    ProjectLayer2D layer;
+    layer.name = "plain";
+    layer.image_path = "plain.png";
+    p.layers_2d.push_back(layer);
+
+    const std::string text = project_to_json(p);
+    // A plain layer writes neither "variants" nor "active_variant", so an M6
+    // file stays byte-identical.
+    MS_CHECK(text.find("variants") == std::string::npos);
+    MS_CHECK(text.find("active_variant") == std::string::npos);
+
+    Project loaded;
+    std::string error;
+    MS_CHECK_MSG(project_from_json(text, loaded, error), error);
+    MS_CHECK(loaded.layers_2d[0].variants.empty());
+    MS_CHECK(loaded.layers_2d[0].active_variant == 0);
+}
+
+// --- M6C: character presets -----------------------------------------------
+
+void test_char2d_preset_round_trip() {
+    Char2DPreset preset;
+    preset.name = "Hero";
+    ProjectLayer2D root;
+    root.name = "hero";
+    ProjectLayer2D head;
+    head.name = "head";
+    head.image_path = "head.png";
+    head.parent = 0;
+    head.variants.push_back({"neutral", "head_neutral.png"});
+    head.variants.push_back({"smile", "head_smile.png"});
+    head.active_variant = 1;
+    head.bound_bone = "neck";
+    preset.layers = {root, head};
+
+    const std::string text = char2d_to_json(preset);
+    Char2DPreset loaded;
+    std::string error;
+    MS_CHECK_MSG(char2d_from_json(text, loaded, error), error);
+    MS_CHECK(loaded.name == "Hero");
+    MS_CHECK(loaded.layers.size() == 2);
+    MS_CHECK(loaded.layers[0].name == "hero");
+    MS_CHECK(loaded.layers[0].parent == -1);
+    MS_CHECK(loaded.layers[1].name == "head");
+    MS_CHECK(loaded.layers[1].parent == 0);
+    MS_CHECK(loaded.layers[1].variants.size() == 2);
+    MS_CHECK(loaded.layers[1].variants[1].image_path == "head_smile.png");
+    MS_CHECK(loaded.layers[1].active_variant == 1);
+    MS_CHECK(loaded.layers[1].bound_bone == "neck");
+}
+
+void test_char2d_rejects_wrong_format() {
+    Char2DPreset preset;
+    std::string error;
+    MS_CHECK(!char2d_from_json("{\"format\":\"nope\"}", preset, error));
+    MS_CHECK(!error.empty());
+    MS_CHECK(!char2d_from_json("not json", preset, error));
+    MS_CHECK(!char2d_from_json("{\"format\":\"msentara-char2d\",\"version\":99}",
+                               preset, error));
+}
+
+void test_collect_and_instantiate_preset() {
+    Scene2D scene;
+    const LayerId root = scene.add_layer("hero");
+    const LayerId body = scene.add_layer("body", root);
+    const LayerId head = scene.add_layer("head", root);
+    scene.find(body)->image_path = "body.png";
+    scene.find(body)->size = vec2(50.0f, 80.0f);
+    scene.find(head)->variants.push_back({"neutral", "head.png", vec2(30.0f, 30.0f)});
+    scene.find(head)->active_variant = 0;
+    // A layer outside the subtree must not be collected.
+    const LayerId other = scene.add_layer("unrelated");
+    (void)other;
+
+    Char2DPreset preset;
+    MS_CHECK(collect_char2d_preset(scene, root, "hero", preset));
+    MS_CHECK(preset.layers.size() == 3);
+    MS_CHECK(preset.layers[0].name == "hero");
+    MS_CHECK(preset.layers[0].parent == -1);
+    MS_CHECK(preset.layers[1].name == "body");
+    MS_CHECK(preset.layers[1].parent == 0);
+    MS_CHECK(preset.layers[2].name == "head");
+    MS_CHECK(preset.layers[2].parent == 0);
+    MS_CHECK(preset.layers[2].variants.size() == 1);
+
+    // Instantiating into a fresh scene reproduces the subtree with the parent
+    // links resolved to the new ids.
+    Scene2D target;
+    const LayerId new_root = instantiate_char2d_preset(target, preset);
+    MS_CHECK(new_root == 0);
+    MS_CHECK(target.size() == 3);
+    MS_CHECK(target.find(1)->parent == new_root);
+    MS_CHECK(target.find(2)->parent == new_root);
+    MS_CHECK(target.find(2)->variants.size() == 1);
+}
+
+void test_instantiate_preset_unique_names() {
+    Scene2D scene;
+    const LayerId existing = scene.add_layer("head");
+    (void)existing;
+
+    Char2DPreset preset;
+    ProjectLayer2D root;
+    root.name = "head";
+    ProjectLayer2D child;
+    child.name = "head";
+    child.parent = 0;
+    preset.layers = {root, child};
+
+    const LayerId root_id = instantiate_char2d_preset(scene, preset);
+    MS_CHECK(root_id != kInvalidLayer);
+    // The first "head" collides with the existing one, so it becomes "head.2";
+    // the child (also "head") then becomes "head.3".
+    MS_CHECK(scene.find(root_id)->name == "head.2");
+    MS_CHECK(scene.find(root_id + 1)->name == "head.3");
+    MS_CHECK(scene.find(root_id + 1)->parent == root_id);
+}
+
+void test_instantiate_empty_preset() {
+    Scene2D scene;
+    Char2DPreset preset;
+    MS_CHECK(instantiate_char2d_preset(scene, preset) == kInvalidLayer);
+    MS_CHECK(scene.size() == 0);
+}
+
+void test_collect_preset_invalid_root() {
+    Scene2D scene;
+    scene.add_layer("a");
+    Char2DPreset preset;
+    MS_CHECK(!collect_char2d_preset(scene, 42, "x", preset));
+}
+
 }  // namespace
 
 int main() {
@@ -705,5 +1111,27 @@ int main() {
     test_onion_window_orders_far_to_near();
     test_onion_window_clamps_to_timeline();
     test_onion_ghost_tint_direction_and_fade();
+
+    test_active_image_path_follows_variant();
+    test_variant_track_stepped();
+    test_variant_track_out_of_order_insert_is_sorted();
+    test_layer_2d_track_samples_variant();
+    test_apply_layer_2d_clip_writes_variant();
+    test_clip_frame_end_includes_variant();
+    test_pick_layer_returns_top_most();
+    test_pick_layer_respects_transform();
+    test_pick_layer_rotation();
+    test_pick_layer_skips_invisible_and_groups();
+    test_pick_layer_through_parent_chain();
+    test_pick_layer_bone_bound();
+    test_screen_to_world_2d_inverts_projection();
+    test_project_round_trip_variants();
+    test_project_omits_variants_when_absent();
+    test_char2d_preset_round_trip();
+    test_char2d_rejects_wrong_format();
+    test_collect_and_instantiate_preset();
+    test_instantiate_preset_unique_names();
+    test_instantiate_empty_preset();
+    test_collect_preset_invalid_root();
     return summary("test_2d");
 }

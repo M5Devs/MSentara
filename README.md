@@ -46,6 +46,19 @@ binding, a keyframe easing editor and onion skinning**, and cross-platform CI.
   through keyed `position`/`rotation`/`scale`/`opacity` tracks. The same
   camera-style pan/zoom and the ImGuizmo manipulator work in 2D, and the 2D
   scene serialises into the `.msentara` project.
+- **Sprite variants** (2D): a layer can hold several named images
+  ("closed"/"open"/"blink") and switch between them, either manually from the
+  Properties panel or through a stepped `variant` animation track that jumps at
+  keyframes. The drawn quad resizes to whichever image is active, so a swap is
+  visible immediately.
+- **2D layer picking**: click a layer in the viewport to select it. The hit
+  test inverts the shared 2D camera projection and each layer's world matrix,
+  so a click lands on the top-most layer under the cursor even when it is
+  scaled, rotated, parented or bone-bound.
+- **2D character presets** (`.mschar2d`): export the selected layer and its
+  subtree — images, variants, pivots, bindings — as a reusable preset, then
+  import it into any scene. Imported layers get unique names and their own
+  textures.
 - **2D skeletal binding** (`Layer2D::bound_bone`): bind a cutout layer to any
   bone on the loaded model's rig, with a per-layer offset. A bound layer is
   driven by that bone's posed (and CCD-IK-solved) global transform instead of
@@ -115,10 +128,13 @@ layer, bottom to top):
 | --- | --- |
 | `--2d` | Open in 2D cutout mode instead of the 3D viewport. |
 | `--image2d <file>` | Import an image as a 2D layer (PNG/JPG). Repeatable. |
+| `--variant <layer>:<name>:<path>` | Attach a named sprite variant to a layer already in the scene. Repeatable. |
+| `--preset <file>` | Import a `.mschar2d` character preset on startup. |
 
 `MSENTARA_IMAGE2D` supplies a single image path when no `--image2d` flag is
-given. A project's `editor_mode` reopens the right mode, and the 2D scene,
-tracks and image paths travel with it.
+given, `MSENTARA_PRESET` a preset path, and `MSENTARA_VARIANT` a single variant
+spec. A project's `editor_mode` reopens the right mode, and the 2D scene,
+tracks, sprite variants and image paths travel with it.
 
 ### Offline PNG sequence export
 

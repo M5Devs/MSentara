@@ -32,9 +32,11 @@ namespace ms {
 // the 2D counterpart of ModelInstance: core describes the layers (no graphics
 // handles), and this class decodes each layer's image and uploads it.
 //
-// Textures are stored index-aligned with Scene2D::layers(), so a layer's image
-// is always textures_[layer_index]. Removing a layer therefore also has to
-// drop its texture; Scene2D has no remove today, so the two never drift.
+// Each layer owns a base texture (its `image_path`) plus one texture per sprite
+// variant, all index-aligned with Scene2D::layers(). draw() samples whichever
+// image the layer's `active_variant` selects, so a variant swap is just a
+// texture change. Removing a layer therefore also has to drop its textures;
+// Scene2D has no remove today, so the two never drift.
 class Scene2DInstance {
 public:
     Scene2D& scene() { return scene_; }
@@ -65,6 +67,20 @@ public:
     // kept in that case).
     bool set_layer_image(LayerId id, const std::string& path, Renderer& renderer);
 
+    // Adds (or updates) a named sprite variant on a layer, decoding and
+    // uploading its image. The layer's `size` follows the variant now active so
+    // the quad matches the swapped-in image. Returns false for an invalid id or
+    // an undecodable file.
+    bool add_layer_variant(LayerId id, const std::string& name,
+                           const std::string& path, Renderer& renderer);
+
+    // (Re)loads every texture a layer needs from the paths already on it: the
+    // base image plus each variant. Used after a project or preset load, which
+    // builds the layer list in core and then asks this class to upload the
+    // images. A path that fails to decode is left with an invalid texture (the
+    // layer still exists, it just draws nothing for that image).
+    void reload_layer_textures(LayerId id, Renderer& renderer);
+
     // Draws every visible layer in z-order. `quad` is the shared unit quad and
     // `view_proj` the 2D projection. Must be called inside a pass.
     //
@@ -93,9 +109,26 @@ public:
                             const Pose* pose = nullptr) const;
 
 private:
+    // Grows the texture vectors so every layer id has a slot. Layers appended
+    // straight to the core scene (a preset instantiation) do not go through
+    // add_group, so this keeps reload/upload index-safe.
+    void ensure_texture_slots();
+
+    // The texture for a layer at a given variant index: the variant's texture
+    // when the index is in range, otherwise the base texture. Taking the index
+    // explicitly lets the onion-skin ghosts sample the *ghost* scene's variant
+    // (which may differ from the live one), not the live layer's.
+    const GpuTexture& texture_for(LayerId id, int variant_index) const;
+
+    // The texture the layer draws right now (its own active variant).
+    const GpuTexture& active_texture(LayerId id) const;
+
     Scene2D scene_;
     AnimationClip clip_;
+    // Base texture per layer, index-aligned with scene_.layers().
     std::vector<GpuTexture> textures_;
+    // Variant textures per layer, index-aligned with the layer's `variants`.
+    std::vector<std::vector<GpuTexture>> variant_textures_;
 };
 
 }  // namespace ms

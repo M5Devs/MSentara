@@ -88,6 +88,15 @@ std::vector<std::string> g_image2d_paths;
 // or a project that stores its own mode.
 bool g_start_mode_2d = false;
 
+// A .mschar2d preset to import on startup (--preset <path>). Imported after
+// any --image2d layers, so a preset can be dropped onto a fresh 2D scene.
+std::string g_preset_path;
+
+// Sprite variants to add on startup (--variant <layer>:<name>:<path>,
+// repeatable). Each attaches one named variant image to an existing layer, so
+// the headless smoke test can exercise the swap path.
+std::vector<std::string> g_variant_specs;
+
 // Headless-ish export driven from the command line (--export <dir>): render the
 // frame range once the window and viewport exist, then quit. Used for
 // scripted/CI rendering and for the export smoke test.
@@ -320,6 +329,18 @@ void apply_project_2d(const Project& project) {
         // The skeletal binding (empty for an M6 file, which loads unbound).
         layer->bound_bone = src.bound_bone;
         layer->bind_offset = src.bind_offset;
+        // Sprite variants, then decode/upload every image the layer needs (the
+        // base image plus each variant). add_layer_from_image already uploaded
+        // the base; reload covers the variants and re-sizes the quad to the
+        // active one.
+        for (const ProjectVariant2D& variant : src.variants) {
+            layer->variants.push_back(LayerVariant{variant.name,
+                                                   variant.image_path, vec2(0.0f)});
+        }
+        layer->active_variant = src.active_variant;
+        if (!layer->variants.empty()) {
+            g_scene2d.reload_layer_textures(id, g_renderer);
+        }
     }
 
     // Rebuild the clip's layer tracks.
@@ -350,6 +371,9 @@ void apply_project_2d(const Project& project) {
             b.cp2 = k.cp2;
             track.opacity.set_key(k.frame, k.value, b);
         }
+        for (const ProjectKey2D& k : src.variant) {
+            track.variant.set_key(k.frame, k.value_int);
+        }
     }
 
     if (!g_scene2d.scene().empty()) {
@@ -361,6 +385,84 @@ void apply_project_2d(const Project& project) {
                             g_scene2d.scene());
     }
     g_editor.set_mode(EditorMode::TwoD);
+}
+
+// Adds a named sprite variant to a layer: decodes/uploads the image and
+// attaches it. Reports the outcome via the editor status.
+void add_layer_variant(const VariantRequest& request) {
+    if (request.layer == kInvalidLayer || request.path.empty()) {
+        return;
+    }
+    if (!g_scene2d.add_layer_variant(request.layer, request.name, request.path,
+                                     g_renderer)) {
+        g_editor.set_status("Could not add variant '" + request.name +
+                            "' from '" + request.path + "'");
+        std::fprintf(stderr, "MSentara: could not decode variant image '%s'\n",
+                     request.path.c_str());
+        return;
+    }
+    g_editor.set_status("Added variant '" + request.name + "'");
+    std::printf("MSentara: added sprite variant '%s' from '%s'\n",
+                request.name.c_str(), request.path.c_str());
+}
+
+// Exports the selected layer's subtree as a .mschar2d character preset.
+void export_preset(const PresetRequest& request) {
+    if (request.path.empty()) {
+        return;
+    }
+    Char2DPreset preset;
+    if (!collect_char2d_preset(g_scene2d.scene(), request.root, request.name,
+                               preset)) {
+        g_editor.set_status("Export preset: no layer selected");
+        return;
+    }
+    std::string error;
+    if (!save_char2d(request.path, preset, error)) {
+        g_editor.set_status("Failed to export preset " + request.path + ": " +
+                            error);
+        std::fprintf(stderr, "MSentara: failed to export preset '%s': %s\n",
+                     request.path.c_str(), error.c_str());
+        return;
+    }
+    g_editor.set_status("Exported preset " + request.path);
+    std::printf("MSentara: exported 2D character preset '%s' (%zu layers)\n",
+                request.path.c_str(), preset.layers.size());
+}
+
+// Imports a .mschar2d preset into the scene, decoding each layer's images and
+// selecting the new root.
+void import_preset(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    Char2DPreset preset;
+    std::string error;
+    if (!load_char2d(path, preset, error)) {
+        g_editor.set_status("Failed to import preset " + path + ": " + error);
+        std::fprintf(stderr, "MSentara: failed to import preset '%s': %s\n",
+                     path.c_str(), error.c_str());
+        return;
+    }
+    const LayerId root = instantiate_char2d_preset(g_scene2d.scene(), preset);
+    if (root == kInvalidLayer) {
+        g_editor.set_status("Preset " + path + " contained no layers");
+        return;
+    }
+    // Decode/upload every image the imported layers reference (base + variants).
+    for (std::size_t i = 0; i < g_scene2d.scene().size(); ++i) {
+        const LayerId id = static_cast<LayerId>(i);
+        const Layer2D* layer = g_scene2d.scene().find(id);
+        if (layer != nullptr &&
+            (!layer->image_path.empty() || !layer->variants.empty())) {
+            g_scene2d.reload_layer_textures(id, g_renderer);
+        }
+    }
+    g_scene2d.scene().select(root);
+    g_editor.set_mode(EditorMode::TwoD);
+    g_editor.set_status("Imported preset " + path);
+    std::printf("MSentara: imported 2D character preset '%s' (%zu layers)\n",
+                path.c_str(), preset.layers.size());
 }
 
 // Saves the current editor state as a .msentara project.
@@ -722,6 +824,62 @@ void init_cb() {
     for (const std::string& image : images) {
         add_image_layer2d(image);
     }
+
+    // A .mschar2d preset is imported after any --image2d layers, so a preset
+    // can be dropped onto a fresh 2D scene.
+    std::string preset = g_preset_path;
+    if (preset.empty()) {
+        if (const char* env = std::getenv("MSENTARA_PRESET")) {
+            preset = env;
+        }
+    }
+    if (!preset.empty()) {
+        import_preset(preset);
+    }
+
+    // Sprite variants: each --variant <layer>:<name>:<path> attaches one named
+    // variant image to a layer already in the scene (by name).
+    std::vector<std::string> variant_specs = g_variant_specs;
+    if (variant_specs.empty()) {
+        if (const char* env = std::getenv("MSENTARA_VARIANT")) {
+            variant_specs.emplace_back(env);
+        }
+    }
+    for (const std::string& spec : variant_specs) {
+        const std::size_t first = spec.find(':');
+        const std::size_t second =
+            (first == std::string::npos) ? std::string::npos
+                                         : spec.find(':', first + 1);
+        if (first == std::string::npos || second == std::string::npos) {
+            std::fprintf(stderr,
+                         "MSentara: --variant expects <layer>:<name>:<path>\n");
+            continue;
+        }
+        const std::string layer_name = spec.substr(0, first);
+        const std::string variant_name = spec.substr(first + 1, second - first - 1);
+        const std::string path = spec.substr(second + 1);
+        // Resolve the layer by name; the first match wins (names are unique
+        // within a scene as produced by preset instantiation).
+        LayerId target = kInvalidLayer;
+        for (std::size_t i = 0; i < g_scene2d.scene().size(); ++i) {
+            const Layer2D* layer = g_scene2d.scene().find(static_cast<LayerId>(i));
+            if (layer != nullptr && layer->name == layer_name) {
+                target = static_cast<LayerId>(i);
+                break;
+            }
+        }
+        if (target == kInvalidLayer) {
+            std::fprintf(stderr,
+                         "MSentara: --variant: no layer named '%s'\n",
+                         layer_name.c_str());
+            continue;
+        }
+        VariantRequest request;
+        request.layer = target;
+        request.name = variant_name;
+        request.path = path;
+        add_layer_variant(request);
+    }
 }
 
 void frame_cb() {
@@ -772,6 +930,15 @@ void frame_cb() {
     }
     if (g_editor.has_pending_project_save()) {
         save_project_file(g_editor.take_pending_project_save());
+    }
+    if (g_editor.has_pending_variant()) {
+        add_layer_variant(g_editor.take_pending_variant());
+    }
+    if (g_editor.has_pending_preset_export()) {
+        export_preset(g_editor.take_pending_preset_export());
+    }
+    if (g_editor.has_pending_preset_import()) {
+        import_preset(g_editor.take_pending_preset_import());
     }
     // An export requested from the UI (or the command line) starts here, once
     // the viewport panel has been sized (g_target_w > 0). Waiting for that is
@@ -1054,6 +1221,15 @@ sapp_desc sokol_main(int argc, char* argv[]) {
             g_image2d_paths.push_back(arg.substr(10));
         } else if (arg == "--2d") {
             g_start_mode_2d = true;
+        } else if (arg == "--preset" && i + 1 < argc) {
+            g_preset_path = argv[++i];
+        } else if (arg.rfind("--preset=", 0) == 0) {
+            g_preset_path = arg.substr(9);
+        } else if (arg == "--variant" && i + 1 < argc) {
+            // Format: <layer>:<name>:<path>
+            g_variant_specs.emplace_back(argv[++i]);
+        } else if (arg.rfind("--variant=", 0) == 0) {
+            g_variant_specs.push_back(arg.substr(10));
         } else if (arg == "--export" && i + 1 < argc) {
             g_export_dir = argv[++i];
         } else if (arg.rfind("--export=", 0) == 0) {

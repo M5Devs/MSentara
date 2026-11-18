@@ -91,24 +91,31 @@ The 2D cutout layers, in paint-index order. Every field is written; only
 `name` is required on load (the rest take their defaults). The skeletal
 binding keys (`bound_bone`, `bind_offset`) are written only when a layer is
 bound, so an unbound layer — and every project saved before Milestone 6B —
-stays byte-identical.
+stays byte-identical. The sprite-variant keys (`variants`, `active_variant`)
+are written only when a layer has variants, so a plain single-image layer and
+every project saved before Milestone 6C stays byte-identical too.
 
 ```json
 [ { "name": "head", "image": "assets/head.png",
     "parent": -1, "pivot": [128.0, 128.0], "position": [0.0, 0.0],
     "rotation": 0.0, "scale": [1.0, 1.0], "z_order": 0,
     "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true },
-  { "name": "arm", "image": "assets/arm.png",
-    "parent": 0, "pivot": [64.0, 32.0], "position": [60.0, 40.0],
+  { "name": "mouth", "image": "assets/mouth_closed.png",
+    "variants": [ { "name": "closed", "image": "assets/mouth_closed.png" },
+                  { "name": "open",   "image": "assets/mouth_open.png" } ],
+    "active_variant": 1,
+    "parent": 0, "pivot": [32.0, 16.0], "position": [60.0, 40.0],
     "rotation": 0.0, "scale": [1.0, 1.0], "z_order": 0,
     "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true,
-    "bound_bone": "left_arm", "bind_offset": [0.0, -12.0] } ]
+    "bound_bone": "head", "bind_offset": [0.0, -12.0] } ]
 ```
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | Layer name. Also the key the tracks match on. |
-| `image` | string | Path to the layer's image (PNG/JPG). Empty for a group node. |
+| `image` | string | Path to the layer's base image (PNG/JPG). Empty for a group node. |
+| `variants` | array | Named sprite variants: `{ "name", "image" }`. Omitted when the layer has none. |
+| `active_variant` | int | Index into `variants` of the image drawn. Omitted when `variants` is. |
 | `parent` | int | Index into this array of the parent layer, or `-1` for a root. |
 | `pivot` | `[x, y]` | Rotation/scale origin in image pixels (defaults to the image centre). |
 | `position` | `[x, y]` | Where the pivot lands, in stage pixels. |
@@ -123,6 +130,10 @@ stays byte-identical.
 
 `parent` is a positional index, so a parent must appear **before** its children
 in the array. The image path is stored verbatim, exactly like `model`/`motion`.
+
+A layer with `variants` draws whichever image `active_variant` selects, and the
+drawn quad takes that image's pixel size; an out-of-range index falls back to
+the first variant. A plain layer (no `variants`) draws its own `image`.
 
 When `bound_bone` names a bone that exists on the model's skeleton, the layer's
 parent chain is replaced by that bone's posed global transform (plus
@@ -142,14 +153,48 @@ with no keys is not written.
                     "interp": { "cp1": [0.42, 0.0], "cp2": [1.0, 1.0] } } ],
     "scale":    [ { "frame": 0, "value2": [1.0, 1.0] } ],
     "rotation": [ { "frame": 0, "value": 0.0 } ],
-    "opacity":  [ { "frame": 0, "value": 1.0 } ] } ]
+    "opacity":  [ { "frame": 0, "value": 1.0 } ],
+    "variant":  [ { "frame": 0, "value_int": 0 },
+                  { "frame": 24, "value_int": 1 } ] } ]
 ```
 
 `position` and `scale` keys carry a two-element `value2`; `rotation` and
-`opacity` keys carry a scalar `value`. `interp` is the normalised Bezier
-control points of the outgoing segment and is written only for a non-linear
-key; its absence means linear (`cp1` `[1/3, 1/3]`, `cp2` `[2/3, 2/3]`). A
-channel with no keys leaves that field at its authored value.
+`opacity` keys carry a scalar `value`; `variant` keys carry an integer
+`value_int` (an index into the layer's `variants`). `interp` is the normalised
+Bezier control points of the outgoing segment and is written only for a
+non-linear key; its absence means linear (`cp1` `[1/3, 1/3]`, `cp2`
+`[2/3, 2/3]`). A channel with no keys leaves that field at its authored value.
+`variant` is stepped, not interpolated: the sampled value holds at the key at
+or before the frame and jumps at each key. `variant` is written only for a
+layer that has variants.
+
+## `.mschar2d` character presets
+
+A reusable 2D character, stored as its own JSON document and exported/imported
+from the File menu (or with `--preset`). The structure mirrors `layers_2d`
+above, so a layer entry is identical to the project format; the top level adds
+a `format`/`version` header and a `name`.
+
+```json
+{ "format": "msentara-char2d", "version": 1, "name": "Hero",
+  "layers": [ { "name": "hero", "image": "", "parent": -1, ... },
+              { "name": "head", "image": "head.png", "parent": 0,
+                "variants": [ { "name": "neutral", "image": "head.png" } ],
+                "active_variant": 0, ... } ] }
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `format` | string | Always `"msentara-char2d"`. A different value is rejected. |
+| `version` | int | Format version (`1`). A different value is rejected. |
+| `name` | string | Preset display name. |
+| `layers` | array | The layer subtree, in the same shape as `layers_2d`. |
+
+The loader rejects a document whose `format` or `version` does not match. On
+import the layers are appended to the current scene with their `parent` links
+resolved to the new ids, and any name that already exists is made unique by
+appending `.2`, `.3`, … so a preset can be imported repeatedly. The imported
+root is selected.
 
 ## Loading
 

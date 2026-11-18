@@ -52,6 +52,19 @@ struct Pose;
 using LayerId = int;
 inline constexpr LayerId kInvalidLayer = -1;
 
+// One named sprite variant of a layer: an expression/state ("closed",
+// "open") and the image that draws it. A layer's `variants` list lets one
+// cutout swap between several images (mouth open/closed, eye states, ...)
+// instead of needing a separate layer per state.
+struct LayerVariant {
+    std::string name;
+    std::string image_path;
+    // Pixel size of the variant's image, filled in when the image is decoded
+    // (so the editor can resize the layer's quad on a swap without a renderer).
+    // Not serialised: it is re-derived from the image on load.
+    vec2 size{0.0f, 0.0f};
+};
+
 // One 2D cutout layer.
 //
 // `pivot` is the local point the layer rotates and scales about, in the
@@ -61,6 +74,13 @@ inline constexpr LayerId kInvalidLayer = -1;
 struct Layer2D {
     std::string name;
     std::string image_path;  // PNG/JPG on disk; empty for a pure group node
+
+    // Optional sprite variants (expressions/states). Empty for a plain single
+    // image layer, which is the M6 behaviour and stays fully backward
+    // compatible. When present, `active_variant` selects which one draws, and
+    // a stepped VariantTrack can switch it over time.
+    std::vector<LayerVariant> variants;
+    int active_variant = 0;  // index into `variants`; ignored when empty
 
     // Optional skeletal binding: the name of a bone on the active skeleton
     // (a 3D rig or a 2D rig) that drives this layer. When set, the layer's
@@ -110,6 +130,23 @@ struct Layer2D {
     // the pivot itself. The gizmo manipulates this form so translation reads
     // as the layer's position and rotation/scale act about the pivot.
     mat4 pivot_matrix() const;
+
+    // The image this layer draws right now: the active variant's path when the
+    // layer has variants (an out-of-range `active_variant` falls back to the
+    // first), otherwise the plain `image_path`. This is what the renderer
+    // loads and draws, so swapping a variant is a texture change, not a
+    // transform change.
+    const std::string& active_image_path() const;
+
+    // The name of the active variant, or an empty string for a plain layer.
+    // Used as the combo's current label.
+    const std::string& active_variant_name() const;
+
+    // The pixel size of the image the layer currently draws: the active
+    // variant's size when the layer has variants (and that size is known),
+    // otherwise the layer's own `size`. Rendering and hit-testing both use
+    // this, so an animation-driven variant swap resizes the quad consistently.
+    vec2 active_size() const;
 };
 
 // A flat collection of 2D layers with a single selected layer.
@@ -162,6 +199,19 @@ public:
     // Layer indices sorted by z_order (ascending), ties broken by insertion
     // order. This is the draw order the renderer walks.
     std::vector<LayerId> draw_order() const;
+
+    // GPU-independent hit-testing. Returns the top-most *visible* layer whose
+    // drawn quad contains `world_point`, or kInvalidLayer when none does.
+    // Layers are tested from the front of the draw order backwards (the last
+    // drawn is the top-most), so a click selects what the user sees on top.
+    //
+    // The test maps `world_point` into each layer's own quad space through the
+    // inverse of its world matrix, which makes it correct for rotated, scaled
+    // and parented layers alike. Bone bindings are honoured exactly as in
+    // world_matrix(), so a bound cutout is picked where it is drawn.
+    LayerId pick_layer(const vec2& world_point,
+                       const Skeleton* skeleton = nullptr,
+                       const Pose* pose = nullptr) const;
 
     LayerId selected() const { return selected_; }
     void select(LayerId id);

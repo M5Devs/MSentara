@@ -57,6 +57,22 @@ struct ExportRequest {
     float fps = 30.0f;
 };
 
+// A sprite-variant add requested from the 2D Properties panel. The app decodes
+// and uploads the image (it owns the renderer) and attaches it to the layer.
+struct VariantRequest {
+    LayerId layer = kInvalidLayer;
+    std::string name;
+    std::string path;
+};
+
+// A reusable 2D character preset (.mschar2d) export or import requested from
+// the File menu. `root` and `name` are used by an export only.
+struct PresetRequest {
+    LayerId root = kInvalidLayer;
+    std::string path;
+    std::string name;
+};
+
 // Owns the editor's non-graphics state (selection, gizmo mode, panel sizes)
 // and draws the whole docking UI for one frame.
 class Editor {
@@ -181,6 +197,40 @@ public:
         return pending_export_;
     }
 
+    // A sprite-variant add requested from the 2D Properties panel. The app
+    // decodes/upload the image and attaches it to the layer.
+    void request_add_variant(const VariantRequest& request) {
+        pending_variant_ = request;
+        has_pending_variant_ = true;
+    }
+    bool has_pending_variant() const { return has_pending_variant_; }
+    VariantRequest take_pending_variant() {
+        has_pending_variant_ = false;
+        return pending_variant_;
+    }
+
+    // A .mschar2d preset export (from the selected layer) or import requested
+    // from the File menu. The app performs the file I/O and re-decodes images.
+    void request_export_preset(const PresetRequest& request) {
+        pending_preset_export_ = request;
+        has_pending_preset_export_ = true;
+    }
+    bool has_pending_preset_export() const { return has_pending_preset_export_; }
+    PresetRequest take_pending_preset_export() {
+        has_pending_preset_export_ = false;
+        return pending_preset_export_;
+    }
+
+    void request_import_preset(const std::string& path) {
+        pending_preset_import_ = path;
+        has_pending_preset_import_ = true;
+    }
+    bool has_pending_preset_import() const { return has_pending_preset_import_; }
+    std::string take_pending_preset_import() {
+        has_pending_preset_import_ = false;
+        return pending_preset_import_;
+    }
+
     // Gathers the current editor state into a serialisable project, recording
     // the given model/motion paths (the editor does not know them). Only
     // non-default morph weights and bone poses are written, so the file stays
@@ -241,6 +291,18 @@ private:
     void key_selected_layer2d();
     void delete_key_selected_layer2d();
 
+    // Hit-tests a click at the given viewport-relative position (in ImGui
+    // window coordinates) against the 2D layers and selects the top-most hit.
+    // Returns true when a layer was selected. Uses the shared 2D camera
+    // projection, so it agrees with what is drawn.
+    bool pick_layer_at(float viewport_origin_x, float viewport_origin_y,
+                       float width, float height);
+
+    // Switches the selected layer to the given variant index and resizes the
+    // layer's quad to that variant's image (whose size was captured at load),
+    // so a swap is visible immediately. Flags the 2D scene as changed.
+    void set_layer_variant(LayerId id, int variant_index);
+
     // The keyed Bezier for the selected layer's active channel at the current
     // frame, or nullptr when there is no such key. The easing editor reads and
     // writes the curve in place through this.
@@ -283,6 +345,12 @@ private:
     bool has_pending_project_save_ = false;
     ExportRequest pending_export_;
     bool has_pending_export_ = false;
+    VariantRequest pending_variant_;
+    bool has_pending_variant_ = false;
+    PresetRequest pending_preset_export_;
+    bool has_pending_preset_export_ = false;
+    std::string pending_preset_import_;
+    bool has_pending_preset_import_ = false;
     bool timeline_changed_ = false;
     bool layers2d_changed_ = false;
     bool physics_reset_requested_ = false;
@@ -293,6 +361,9 @@ private:
     char image2d_path_buffer_[512] = {};
     char project_path_buffer_[512] = {};
     char export_dir_buffer_[512] = {};
+    char variant_name_buffer_[128] = {};
+    char variant_path_buffer_[512] = {};
+    char preset_path_buffer_[512] = {};
     int export_start_ = 0;
     int export_end_ = 0;
     bool export_modal_open_ = false;

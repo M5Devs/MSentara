@@ -169,12 +169,41 @@ struct FloatTrack {
     int frame_end() const;
 };
 
+// A keyed *discrete* channel: a layer's active sprite-variant index over time.
+// Interpolation is **stepped** — the value holds the key at or before `frame`
+// and jumps at the next key — because a variant index is a whole number and
+// blending two of them is meaningless. This is the one track that is not
+// eased, so it deliberately carries no Bezier.
+struct VariantKey {
+    int frame = 0;
+    int value = 0;  // index into Layer2D::variants
+};
+
+struct VariantTrack {
+    std::string name;
+    std::vector<VariantKey> keys;
+
+    void sort_keys();
+    void set_key(int frame, int value);
+    bool remove_key(int frame);
+    bool has_key(int frame) const;
+
+    // Stepped sample: the value of the last key at or before `frame`, or
+    // `fallback` when there is no such key (i.e. before the first key).
+    int sample(float frame, int fallback = 0) const;
+
+    bool empty() const { return keys.empty(); }
+    int frame_start() const;
+    int frame_end() const;
+};
+
 // The animated value of one 2D layer at a point in time.
 struct Layer2DTrackState {
     vec2 position{0.0f, 0.0f};
     float rotation = 0.0f;  // degrees
     vec2 scale{1.0f, 1.0f};
     float opacity = 1.0f;
+    int variant = 0;
 };
 
 // Every animated channel of one 2D layer, keyed by the layer's *name* so a
@@ -187,12 +216,14 @@ struct Layer2DTrack {
     Vec2Track scale;
     FloatTrack rotation;
     FloatTrack opacity;
+    // Stepped sprite-variant index. Empty for a plain single-image layer.
+    VariantTrack variant;
 
     Layer2DTrackState sample(float frame, const Layer2DTrackState& base) const;
 
     bool empty() const {
         return position.empty() && scale.empty() && rotation.empty() &&
-               opacity.empty();
+               opacity.empty() && variant.empty();
     }
     int frame_start() const;
     int frame_end() const;

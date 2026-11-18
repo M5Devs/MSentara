@@ -72,11 +72,21 @@ struct ProjectBonePose {
     vec3 scale{1.0f, 1.0f, 1.0f};
 };
 
+// A serialised sprite variant of a 2D layer (an expression/state).
+struct ProjectVariant2D {
+    std::string name;
+    std::string image_path;
+};
+
 // A serialised 2D layer. Mirrors Layer2D field for field; the parent is stored
 // as an index into the project's `layers_2d` array, matching Scene2D.
 struct ProjectLayer2D {
     std::string name;
     std::string image_path;
+    // Optional sprite variants. Empty for a plain single-image layer, so an
+    // older file (which has neither key) loads unchanged.
+    std::vector<ProjectVariant2D> variants;
+    int active_variant = 0;
     int parent = -1;
     vec2 pivot{0.0f, 0.0f};
     vec2 position{0.0f, 0.0f};
@@ -99,8 +109,10 @@ struct ProjectKey2D {
     int frame = 0;
     float value = 0.0f;    // scalar channels (rotation, opacity)
     vec2 value2{0.0f, 0.0f};  // vector channels (position, scale)
+    int value_int = 0;        // discrete channel (variant index)
     // Interpolation curve that eases the span starting at this key. Stored as
     // four numbers; a linear curve is the default and is omitted on write.
+    // Unused by the stepped variant channel.
     vec2 cp1{1.0f / 3.0f, 1.0f / 3.0f};
     vec2 cp2{2.0f / 3.0f, 2.0f / 3.0f};
 };
@@ -112,6 +124,7 @@ struct ProjectLayer2DTrack {
     std::vector<ProjectKey2D> scale;     // value2
     std::vector<ProjectKey2D> rotation;  // value
     std::vector<ProjectKey2D> opacity;   // value
+    std::vector<ProjectKey2D> variant;   // value_int (stepped)
 };
 
 // Everything a .msentara file stores, as plain data.
@@ -158,5 +171,45 @@ bool project_from_json(const std::string& text, Project& project,
 bool save_project(const std::string& path, const Project& project,
                   std::string& error);
 bool load_project(const std::string& path, Project& project, std::string& error);
+
+// ---------------------------------------------------------------------------
+// The .mschar2d reusable 2D character preset.
+//
+// A lightweight JSON file holding a 2D root layer and its whole subtree
+// (including variants and bound-bone names) so a cutout character can be
+// dropped into any scene. It deliberately carries no animation tracks: a
+// preset is a *rig*, and the tracks keyed by the layers' names belong to the
+// project, not the character.
+// ---------------------------------------------------------------------------
+
+inline constexpr const char* kChar2DFormat = "msentara-char2d";
+inline constexpr int kChar2DVersion = 1;
+
+struct Char2DPreset {
+    std::string name;
+    // The subtree, root first. `parent` on each layer indexes into *this*
+    // array (0-based); the root's parent is -1.
+    std::vector<ProjectLayer2D> layers;
+};
+
+std::string char2d_to_json(const Char2DPreset& preset);
+bool char2d_from_json(const std::string& text, Char2DPreset& preset,
+                      std::string& error);
+bool save_char2d(const std::string& path, const Char2DPreset& preset,
+                 std::string& error);
+bool load_char2d(const std::string& path, Char2DPreset& preset,
+                 std::string& error);
+
+// Gathers `root` and every descendant into a preset, rewriting parent indices
+// to be relative to the collected subtree (so the preset is self-contained).
+// Returns false for an invalid root. Variants and skeletal bindings are copied.
+bool collect_char2d_preset(const Scene2D& scene, LayerId root,
+                           const std::string& name, Char2DPreset& out);
+
+// Appends a preset's layers to `scene`, giving every layer a *unique* name
+// (so several characters can coexist in one scene and name-keyed tracks stay
+// unambiguous) and resolving parent links within the new subtree. Returns the
+// new root's id, or kInvalidLayer when the preset is empty.
+LayerId instantiate_char2d_preset(Scene2D& scene, const Char2DPreset& preset);
 
 }  // namespace ms

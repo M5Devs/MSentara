@@ -18,6 +18,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <utility>
 
@@ -129,6 +130,15 @@ json key_vec2_to_json(int frame, const vec2& value, const Bezier& b) {
     return entry;
 }
 
+// The discrete variant channel: a whole number per key, stepped, so it never
+// carries an interpolation curve.
+json key_int_to_json(int frame, int value) {
+    json entry;
+    entry["frame"] = frame;
+    entry["value"] = value;
+    return entry;
+}
+
 // Reads a key array into `out`. A non-array value leaves `out` empty (the
 // channel is simply absent), matching how every other optional field behaves.
 void keys_scalar_from_json(const json& value, std::vector<ProjectKey2D>& out) {
@@ -167,10 +177,38 @@ void keys_vec2_from_json(const json& value, std::vector<ProjectKey2D>& out) {
     }
 }
 
+void keys_int_from_json(const json& value, std::vector<ProjectKey2D>& out) {
+    if (!value.is_array()) {
+        return;
+    }
+    for (const json& entry : value) {
+        if (!entry.is_object()) {
+            continue;
+        }
+        ProjectKey2D key;
+        key.frame = entry.value("frame", 0);
+        key.value_int = entry.value("value", 0);
+        out.push_back(key);
+    }
+}
+
 json layer_2d_to_json(const ProjectLayer2D& layer) {
     json out;
     out["name"] = layer.name;
     out["image"] = layer.image_path;
+    // Variants are omitted entirely for a plain single-image layer, so an
+    // M6 layer stays compact and an older reader sees no new keys.
+    if (!layer.variants.empty()) {
+        json variants = json::array();
+        for (const ProjectVariant2D& variant : layer.variants) {
+            json entry;
+            entry["name"] = variant.name;
+            entry["image"] = variant.image_path;
+            variants.push_back(entry);
+        }
+        out["variants"] = variants;
+        out["active_variant"] = layer.active_variant;
+    }
     out["parent"] = layer.parent;
     out["pivot"] = vec2_to_json(layer.pivot);
     out["position"] = vec2_to_json(layer.position);
@@ -198,6 +236,18 @@ ProjectLayer2D layer_2d_from_json(const json& value) {
     }
     layer.name = value.value("name", std::string());
     layer.image_path = value.value("image", std::string());
+    if (value.contains("variants") && value["variants"].is_array()) {
+        for (const json& entry : value["variants"]) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            ProjectVariant2D variant;
+            variant.name = entry.value("name", std::string());
+            variant.image_path = entry.value("image", std::string());
+            layer.variants.push_back(std::move(variant));
+        }
+    }
+    layer.active_variant = value.value("active_variant", layer.active_variant);
     layer.parent = value.value("parent", layer.parent);
     layer.pivot = vec2_from_json(value.value("pivot", json()), layer.pivot);
     layer.position =
@@ -251,6 +301,13 @@ json layer_2d_track_to_json(const ProjectLayer2DTrack& track) {
     write_vec2("scale", track.scale);
     write_scalar("rotation", track.rotation);
     write_scalar("opacity", track.opacity);
+    if (!track.variant.empty()) {
+        json arr = json::array();
+        for (const ProjectKey2D& k : track.variant) {
+            arr.push_back(key_int_to_json(k.frame, k.value_int));
+        }
+        out["variant"] = arr;
+    }
     return out;
 }
 
@@ -264,6 +321,7 @@ ProjectLayer2DTrack layer_2d_track_from_json(const json& value) {
     keys_vec2_from_json(value.value("scale", json()), track.scale);
     keys_scalar_from_json(value.value("rotation", json()), track.rotation);
     keys_scalar_from_json(value.value("opacity", json()), track.opacity);
+    keys_int_from_json(value.value("variant", json()), track.variant);
     return track;
 }
 
@@ -496,6 +554,222 @@ bool load_project(const std::string& path, Project& project,
     std::ostringstream buffer;
     buffer << file.rdbuf();
     return project_from_json(buffer.str(), project, error);
+}
+
+// ---------------------------------------------------------------------------
+// .mschar2d character presets
+// ---------------------------------------------------------------------------
+
+std::string char2d_to_json(const Char2DPreset& preset) {
+    json out;
+    out["format"] = kChar2DFormat;
+    out["version"] = kChar2DVersion;
+    out["name"] = preset.name;
+    json layers = json::array();
+    for (const ProjectLayer2D& layer : preset.layers) {
+        layers.push_back(layer_2d_to_json(layer));
+    }
+    out["layers"] = layers;
+    return out.dump(2) + "\n";
+}
+
+bool char2d_from_json(const std::string& text, Char2DPreset& preset,
+                      std::string& error) {
+    json in;
+    try {
+        in = json::parse(text);
+    } catch (const json::parse_error& e) {
+        error = std::string("invalid JSON: ") + e.what();
+        return false;
+    }
+    if (!in.is_object()) {
+        error = "preset root is not a JSON object";
+        return false;
+    }
+    if (in.value("format", std::string()) != kChar2DFormat) {
+        error = "not an msentara character preset (missing or wrong \"format\")";
+        return false;
+    }
+    const int version = in.value("version", 0);
+    if (version != kChar2DVersion) {
+        error = "unsupported preset version " + std::to_string(version) +
+                " (this build reads version " + std::to_string(kChar2DVersion) +
+                ")";
+        return false;
+    }
+    preset = Char2DPreset{};
+    preset.name = in.value("name", std::string());
+    if (in.contains("layers") && in["layers"].is_array()) {
+        for (const json& entry : in["layers"]) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            preset.layers.push_back(layer_2d_from_json(entry));
+        }
+    }
+    return true;
+}
+
+bool save_char2d(const std::string& path, const Char2DPreset& preset,
+                 std::string& error) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        error = "cannot open '" + path + "' for writing";
+        return false;
+    }
+    file << char2d_to_json(preset);
+    if (!file) {
+        error = "failed while writing '" + path + "'";
+        return false;
+    }
+    return true;
+}
+
+bool load_char2d(const std::string& path, Char2DPreset& preset,
+                 std::string& error) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = "cannot open '" + path + "'";
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return char2d_from_json(buffer.str(), preset, error);
+}
+
+bool collect_char2d_preset(const Scene2D& scene, LayerId root,
+                           const std::string& name, Char2DPreset& out) {
+    if (scene.find(root) == nullptr) {
+        return false;
+    }
+
+    // Gather the subtree depth-first (root first) and remember each collected
+    // layer's original id so parents can be rewritten to subtree indices. A
+    // visited set guards against a malformed parent cycle (Scene2D has no cycle
+    // guard of its own), so collection always terminates.
+    std::vector<LayerId> collected;
+    std::vector<int> old_index;  // collected[i]'s original id
+    std::vector<char> visited(scene.size(), 0);
+    std::function<void(LayerId)> visit = [&](LayerId id) {
+        if (scene.find(id) == nullptr || visited[static_cast<std::size_t>(id)]) {
+            return;
+        }
+        visited[static_cast<std::size_t>(id)] = 1;
+        collected.push_back(id);
+        old_index.push_back(id);
+        // Children are every layer whose parent is `id`, in list order, which
+        // keeps the preset deterministic.
+        for (std::size_t i = 0; i < scene.size(); ++i) {
+            const LayerId child = static_cast<LayerId>(i);
+            if (scene.find(child)->parent == id) {
+                visit(child);
+            }
+        }
+    };
+    visit(root);
+
+    out = Char2DPreset{};
+    out.name = name;
+
+    const auto subtree_index = [&](LayerId original) -> int {
+        for (std::size_t i = 0; i < old_index.size(); ++i) {
+            if (old_index[i] == original) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    };
+
+    for (const LayerId id : collected) {
+        const Layer2D* layer = scene.find(id);
+        ProjectLayer2D out_layer;
+        out_layer.name = layer->name;
+        out_layer.image_path = layer->image_path;
+        for (const LayerVariant& variant : layer->variants) {
+            out_layer.variants.push_back({variant.name, variant.image_path});
+        }
+        out_layer.active_variant = layer->active_variant;
+        // The parent is rewritten to a subtree index (or -1 for the root); a
+        // parent outside the subtree cannot happen because only descendants of
+        // `root` were collected.
+        out_layer.parent = subtree_index(layer->parent);
+        out_layer.pivot = layer->pivot;
+        out_layer.position = layer->position;
+        out_layer.rotation = layer->rotation;
+        out_layer.scale = layer->scale;
+        out_layer.z_order = layer->z_order;
+        out_layer.opacity = layer->opacity;
+        out_layer.tint = layer->tint;
+        out_layer.visible = layer->visible;
+        out_layer.bound_bone = layer->bound_bone;
+        out_layer.bind_offset = layer->bind_offset;
+        out.layers.push_back(std::move(out_layer));
+    }
+    return true;
+}
+
+LayerId instantiate_char2d_preset(Scene2D& scene, const Char2DPreset& preset) {
+    if (preset.layers.empty()) {
+        return kInvalidLayer;
+    }
+
+    // A helper to make every imported layer's name unique within the scene, so
+    // two characters can coexist and name-keyed animation tracks stay
+    // unambiguous. "head" becomes "head.2" when "head" is already taken.
+    const auto unique_name = [&scene](const std::string& base) {
+        const std::string stem = base.empty() ? std::string("Layer") : base;
+        const auto taken = [&scene](const std::string& candidate) {
+            for (const Layer2D& layer : scene.layers()) {
+                if (layer.name == candidate) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (!taken(stem)) {
+            return stem;
+        }
+        for (int suffix = 2; suffix < 100000; ++suffix) {
+            const std::string candidate = stem + "." + std::to_string(suffix);
+            if (!taken(candidate)) {
+                return candidate;
+            }
+        }
+        return stem;
+    };
+
+    // Preset parent indices are subtree-relative; map each to the new scene id.
+    std::vector<LayerId> new_ids(preset.layers.size(), kInvalidLayer);
+    for (std::size_t i = 0; i < preset.layers.size(); ++i) {
+        const ProjectLayer2D& src = preset.layers[i];
+        LayerId parent = kInvalidLayer;
+        if (src.parent >= 0 &&
+            static_cast<std::size_t>(src.parent) < i) {
+            parent = new_ids[static_cast<std::size_t>(src.parent)];
+        }
+        const LayerId id = scene.add_layer(unique_name(src.name), parent);
+        Layer2D* layer = scene.find(id);
+        if (layer == nullptr) {
+            continue;
+        }
+        layer->image_path = src.image_path;
+        for (const ProjectVariant2D& variant : src.variants) {
+            layer->variants.push_back({variant.name, variant.image_path});
+        }
+        layer->active_variant = src.active_variant;
+        layer->pivot = src.pivot;
+        layer->position = src.position;
+        layer->rotation = src.rotation;
+        layer->scale = src.scale;
+        layer->z_order = src.z_order;
+        layer->opacity = src.opacity;
+        layer->tint = src.tint;
+        layer->visible = src.visible;
+        layer->bound_bone = src.bound_bone;
+        layer->bind_offset = src.bind_offset;
+        new_ids[i] = id;
+    }
+    return new_ids[0];
 }
 
 }  // namespace ms
