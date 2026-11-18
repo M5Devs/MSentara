@@ -80,6 +80,22 @@ jobs:
           python3 scripts/make_test_pmx.py test_model.pmx
           MSENTARA_FRAME_LIMIT=3 ./build/MSentara --pmx test_model.pmx
 
+      - name: Headless 2D smoke run
+        run: |
+          Xvfb :99 -screen 0 1600x900x24 &
+          sleep 2
+          export DISPLAY=:99
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GALLIUM_DRIVER=llvmpipe
+          export MESA_GL_VERSION_OVERRIDE=4.5
+          export MESA_GLSL_VERSION_OVERRIDE=450
+          # Import a generated layer in 2D mode and export a short sequence.
+          python3 scripts/make_test_png.py test_layer.png
+          MSENTARA_FRAME_LIMIT=40 ./build/MSentara --2d \
+              --image2d test_layer.png \
+              --export out-2d --export-start 0 --export-end 8
+          test "$(ls out-2d | wc -l)" -eq 9
+
   windows:
     name: Windows (MSVC)
     runs-on: windows-2022
