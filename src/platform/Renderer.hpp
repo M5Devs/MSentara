@@ -67,6 +67,15 @@ public:
     void draw_lines(const GpuMesh& mesh, const mat4& model,
                     const mat4& view_proj);
 
+    // Draws one 2D sprite (an alpha-blended textured quad). `mesh` is the
+    // shared unit quad from make_unit_quad(); `model` scales it to the layer's
+    // size and places it; `view_proj` is Camera::projection_matrix_2d (the 2D
+    // view matrix is identity). `tint` already folds in the layer opacity.
+    // Must be called inside a pass, in draw order (back to front).
+    void draw_sprite(const GpuMesh& mesh, const GpuTexture& texture,
+                     const mat4& model, const mat4& view_proj,
+                     const vec4& tint);
+
     // --- Textures ---------------------------------------------------------
     // Uploads decoded RGBA8 pixels. Returns an invalid handle on empty input.
     GpuTexture create_texture(const TextureData& texture);
@@ -108,6 +117,9 @@ private:
     std::uint32_t skinned_shader_ = 0;
     GpuPipeline skinned_pipeline_;
     GpuPipeline skinned_pipeline_double_;
+
+    std::uint32_t sprite_shader_ = 0;
+    GpuPipeline sprite_pipeline_;
 
     GpuTexture white_texture_;
 };

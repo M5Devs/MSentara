@@ -24,6 +24,9 @@ after a model is re-exported (as long as the morph and bone names are stable).
 | `use_vmd_camera` | bool | Whether the loaded motion's camera track drives the viewport. Missing means `false`. |
 | `morphs` | array | Manual morph weights, see below. |
 | `bones` | array | Manual bone poses, see below. |
+| `editor_mode` | string | `"3d"` or `"2d"`. Which viewport the project reopens in. Missing means `"3d"`. |
+| `layers_2d` | array | 2D cutout layers, see below. Empty for a 3D-only project. |
+| `layer2d_tracks` | array | 2D layer animation tracks, see below. |
 
 `format` and `version` are required. Every other key is optional and falls
 back to a default, so a hand-written minimal file still loads:
@@ -81,6 +84,60 @@ that no longer exists is skipped on load.
 Only bones whose delta differs from the rest pose are written. As with morphs,
 entries are keyed by bone name and a missing name is skipped. `position` is in
 world units, `rotation` is Euler XYZ degrees, `scale` is a multiplier.
+
+## `layers_2d`
+
+The 2D cutout layers, in paint-index order. Every field is written; only
+`name` is required on load (the rest take their defaults).
+
+```json
+[ { "name": "head", "image": "assets/head.png",
+    "parent": -1, "pivot": [128.0, 128.0], "position": [0.0, 0.0],
+    "rotation": 0.0, "scale": [1.0, 1.0], "z_order": 0,
+    "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true },
+  { "name": "arm", "image": "assets/arm.png",
+    "parent": 0, "pivot": [64.0, 32.0], "position": [60.0, 40.0],
+    "rotation": 0.0, "scale": [1.0, 1.0], "z_order": 0,
+    "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true } ]
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | Layer name. Also the key the tracks match on. |
+| `image` | string | Path to the layer's image (PNG/JPG). Empty for a group node. |
+| `parent` | int | Index into this array of the parent layer, or `-1` for a root. |
+| `pivot` | `[x, y]` | Rotation/scale origin in image pixels (defaults to the image centre). |
+| `position` | `[x, y]` | Where the pivot lands, in stage pixels. |
+| `rotation` | float | Z rotation in degrees. |
+| `scale` | `[x, y]` | Per-axis scale multiplier. |
+| `z_order` | int | Paint order; lower draws behind. Ties keep insertion order. |
+| `opacity` | float | 0..1, multiplied into the layer's alpha. |
+| `tint` | `[r, g, b, a]` | Multiplied with the texel. |
+| `visible` | bool | Hidden layers are skipped when drawing. |
+
+`parent` is a positional index, so a parent must appear **before** its children
+in the array. The image path is stored verbatim, exactly like `model`/`motion`.
+
+## `layer2d_tracks`
+
+The 2D animation, one entry per animated layer, keyed by layer name. A layer
+with no keys is not written.
+
+```json
+[ { "name": "arm",
+    "position": [ { "frame": 0,  "value2": [60.0, 40.0] },
+                  { "frame": 20, "value2": [180.0, 120.0],
+                    "interp": { "cp1": [0.42, 0.0], "cp2": [1.0, 1.0] } } ],
+    "scale":    [ { "frame": 0, "value2": [1.0, 1.0] } ],
+    "rotation": [ { "frame": 0, "value": 0.0 } ],
+    "opacity":  [ { "frame": 0, "value": 1.0 } ] } ]
+```
+
+`position` and `scale` keys carry a two-element `value2`; `rotation` and
+`opacity` keys carry a scalar `value`. `interp` is the normalised Bezier
+control points of the outgoing segment and is written only for a non-linear
+key; its absence means linear (`cp1` `[1/3, 1/3]`, `cp2` `[2/3, 2/3]`). A
+channel with no keys leaves that field at its authored value.
 
 ## Loading
 

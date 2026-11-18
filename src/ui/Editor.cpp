@@ -16,6 +16,8 @@
 
 #include "ui/Editor.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -76,6 +78,29 @@ void Editor::viewport_rect(float& x, float& y, float& w, float& h) const {
     y = viewport_y_;
     w = viewport_w_;
     h = viewport_h_;
+}
+
+void Editor::set_mode(EditorMode mode) {
+    if (mode_ == mode) {
+        return;  // already in this mode; do not stomp the current view
+    }
+    mode_ = mode;
+    // The 2D view uses the same Camera but a different meaning for its orbit
+    // fields (target.xy is the pan, distance is the zoom in pixels). Reset to
+    // a sane 2D framing so switching to 2D does not inherit a 3D orbit that
+    // puts everything off-screen.
+    if (mode_ == EditorMode::TwoD) {
+        camera_.yaw = 0.0f;
+        camera_.pitch = 0.0f;
+        camera_.roll = 0.0f;
+        camera_.orthographic = true;
+        // A half-height of ~450px frames a 1920x1080-ish stage at 1:1.
+        camera_.distance = 450.0f;
+        camera_.target = vec3(0.0f, 0.0f, 0.0f);
+    } else {
+        camera_.set_view_camera_persp();
+        camera_.frame(vec3(0.0f), 1.0f);
+    }
 }
 
 void Editor::draw(const RenderTarget& viewport) {
@@ -140,9 +165,17 @@ void Editor::draw(const RenderTarget& viewport) {
     ImGui::End();
 
     draw_viewport_panel(viewport);
-    draw_outliner_panel();
+    if (mode_ == EditorMode::TwoD) {
+        draw_layer2d_outliner();
+    } else {
+        draw_outliner_panel();
+    }
     draw_morphs_panel();
-    draw_properties_panel();
+    if (mode_ == EditorMode::TwoD) {
+        draw_layer2d_properties();
+    } else {
+        draw_properties_panel();
+    }
     draw_timeline_panel();
     draw_export_modal();
 
@@ -208,6 +241,19 @@ void Editor::draw_main_menu_bar() {
             }
         }
         ImGui::Separator();
+        // A 2D cutout layer is created from an image; switching to 2D mode is
+        // offered right here so the imported layer is immediately visible.
+        ImGui::TextUnformatted("Import 2D Image (PNG/JPG)");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool img2d_submitted = ImGui::InputText(
+            "##image2d_path", image2d_path_buffer_,
+            sizeof(image2d_path_buffer_), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Add 2D Layer") || img2d_submitted) {
+            if (image2d_path_buffer_[0] != '\0') {
+                request_import_image2d(image2d_path_buffer_);
+            }
+        }
+        ImGui::Separator();
         // Offline rendering is a desktop-only feature: the web build has no
         // synchronous framebuffer readback, so the entry is hidden there.
 #if !defined(__EMSCRIPTEN__)
@@ -227,6 +273,13 @@ void Editor::draw_main_menu_bar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("3D Mode", nullptr, mode_ == EditorMode::ThreeD)) {
+            set_mode(EditorMode::ThreeD);
+        }
+        if (ImGui::MenuItem("2D Mode", nullptr, mode_ == EditorMode::TwoD)) {
+            set_mode(EditorMode::TwoD);
+        }
+        ImGui::Separator();
         ImGui::MenuItem("Front", "Numpad 1");
         ImGui::MenuItem("Right", "Numpad 3");
         ImGui::MenuItem("Top", "Numpad 7");
@@ -302,10 +355,15 @@ void Editor::draw_viewport_panel(const RenderTarget& viewport) {
             ImGui::Dummy(avail);
         }
 
-        // The loaded model takes over the gizmo: its selected bone is posed,
-        // and the scene entities' gizmo is only used when no model is present.
-        if (model_ != nullptr && model_->valid() &&
-            model_->selected_bone() >= 0) {
+        // In 2D mode the gizmo manipulates the selected layer's pixel-space
+        // world matrix; the 3D paths below are skipped entirely.
+        if (mode_ == EditorMode::TwoD) {
+            if (scene2d_ != nullptr && scene2d_->scene().selected_layer() !=
+                                          nullptr) {
+                draw_layer2d_gizmo(origin.x, origin.y, avail.x, avail.y);
+            }
+        } else if (model_ != nullptr && model_->valid() &&
+                   model_->selected_bone() >= 0) {
             draw_model_gizmo(origin.x, origin.y, avail.x, avail.y);
         } else {
             Entity* selected = scene_.selected_entity();
@@ -928,6 +986,64 @@ Project Editor::capture_project(const std::string& model_path,
         }
     }
 
+    project.editor_mode = (mode_ == EditorMode::TwoD) ? "2d" : "3d";
+
+    // Serialise the 2D scene and its tracks. ProjectIO writes only the layer
+    // fields that differ from their defaults and skips empty tracks, so a
+    // 3D-only project emits two empty arrays and nothing else.
+    if (scene2d_ != nullptr) {
+        for (const Layer2D& layer : scene2d_->scene().layers()) {
+            ProjectLayer2D out;
+            out.name = layer.name;
+            out.image_path = layer.image_path;
+            out.parent = layer.parent;
+            out.pivot = layer.pivot;
+            out.position = layer.position;
+            out.rotation = layer.rotation;
+            out.scale = layer.scale;
+            out.z_order = layer.z_order;
+            out.opacity = layer.opacity;
+            out.tint = layer.tint;
+            out.visible = layer.visible;
+            project.layers_2d.push_back(std::move(out));
+        }
+
+        for (const Layer2DTrack& track : scene2d_->clip().layer_2d_tracks) {
+            if (track.empty()) {
+                continue;
+            }
+            ProjectLayer2DTrack out;
+            out.name = track.name;
+            const auto copy_vec2 = [](const Vec2Track& src,
+                                      std::vector<ProjectKey2D>& dst) {
+                for (const Vec2Key& k : src.keys) {
+                    ProjectKey2D key;
+                    key.frame = k.frame;
+                    key.value2 = k.value;
+                    key.cp1 = k.bezier.cp1;
+                    key.cp2 = k.bezier.cp2;
+                    dst.push_back(key);
+                }
+            };
+            const auto copy_float = [](const FloatTrack& src,
+                                       std::vector<ProjectKey2D>& dst) {
+                for (const FloatKey& k : src.keys) {
+                    ProjectKey2D key;
+                    key.frame = k.frame;
+                    key.value = k.value;
+                    key.cp1 = k.bezier.cp1;
+                    key.cp2 = k.bezier.cp2;
+                    dst.push_back(key);
+                }
+            };
+            copy_vec2(track.position, out.position);
+            copy_vec2(track.scale, out.scale);
+            copy_float(track.rotation, out.rotation);
+            copy_float(track.opacity, out.opacity);
+            project.layer2d_tracks.push_back(std::move(out));
+        }
+    }
+
     return project;
 }
 
@@ -939,6 +1055,12 @@ void Editor::apply_project_view(const Project& project) {
     timeline_.playing = false;
     timeline_.set_frame(project.current_frame);
 
+    // Switch mode first (which resets the camera to that mode's default), then
+    // restore the saved camera, so a project always reopens on the exact view
+    // it was saved from regardless of the mode the editor was already in.
+    set_mode(project.editor_mode == "2d" ? EditorMode::TwoD
+                                         : EditorMode::ThreeD);
+
     camera_.target = project.camera.target;
     camera_.distance = project.camera.distance;
     camera_.yaw = project.camera.yaw;
@@ -946,7 +1068,296 @@ void Editor::apply_project_view(const Project& project) {
     camera_.roll = project.camera.roll;
     camera_.fov_y = project.camera.fov_y;
     camera_.orthographic = project.camera.orthographic;
+    if (mode_ == EditorMode::TwoD) {
+        // A 2D project's camera is the pixel-space one; it is always
+        // orthographic and only the pan (target.xy) and zoom (distance) matter.
+        camera_.orthographic = true;
+    }
     use_vmd_camera_ = project.use_vmd_camera;
+}
+
+// ---------------------------------------------------------------------------
+// 2D mode panels
+// ---------------------------------------------------------------------------
+
+void Editor::draw_layer2d_outliner() {
+    ImGui::Begin(kOutlinerWindow);
+
+    Scene2D* scene2d = (scene2d_ != nullptr) ? &scene2d_->scene() : nullptr;
+
+    if (scene2d == nullptr || scene2d->empty()) {
+        ImGui::TextDisabled("No 2D layers");
+        ImGui::TextDisabled("File > Import 2D Image to add one");
+        ImGui::End();
+        return;
+    }
+
+    // The hierarchy is drawn depth-first from the roots, so a child's
+    // indentation shows its parent. A child list is built once per frame, which
+    // also tolerates the malformed-rig case of an out-of-range parent.
+    const int count = static_cast<int>(scene2d->size());
+    std::vector<std::vector<LayerId>> children(static_cast<std::size_t>(count));
+    std::vector<LayerId> roots;
+    for (int i = 0; i < count; ++i) {
+        const LayerId parent = scene2d->layers()[static_cast<std::size_t>(i)].parent;
+        if (parent >= 0 && parent < count) {
+            children[static_cast<std::size_t>(parent)].push_back(i);
+        } else {
+            roots.push_back(i);
+        }
+    }
+
+    std::function<void(LayerId)> visit = [&](LayerId id) {
+        const Layer2D& layer = scene2d->layers()[static_cast<std::size_t>(id)];
+        const bool selected = (scene2d->selected() == id);
+        const bool has_children = !children[static_cast<std::size_t>(id)].empty();
+
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                   ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (!has_children) {
+            flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        }
+        if (selected) {
+            flags |= ImGuiTreeNodeFlags_Selected;
+        }
+
+        ImGui::PushID(id);
+        const char* icon = layer.image_path.empty() ? "[G]" : "[I]";
+        const bool open = ImGui::TreeNodeEx(
+            "layer", flags, "%s %s", icon, layer.name.c_str());
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+            scene2d->select(id);
+        }
+        if (open && has_children) {
+            for (LayerId child : children[static_cast<std::size_t>(id)]) {
+                visit(child);
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    };
+
+    for (LayerId root : roots) {
+        visit(root);
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Delete Layer")) {
+        // A flat, index-addressed list makes deletion fiddly (every later
+        // index shifts), so M6A only exposes it for a leaf; removing the image
+        // and clearing the drawable is the common "hide this part" action.
+        Layer2D* selected = scene2d->selected_layer();
+        if (selected != nullptr) {
+            selected->visible = false;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu layers", scene2d->size());
+
+    ImGui::End();
+}
+
+void Editor::draw_layer2d_properties() {
+    ImGui::Begin(kPropertiesWindow);
+
+    Scene2D* scene2d = (scene2d_ != nullptr) ? &scene2d_->scene() : nullptr;
+    Layer2D* layer = (scene2d != nullptr) ? scene2d->selected_layer() : nullptr;
+    if (layer == nullptr) {
+        ImGui::TextDisabled("No layer selected");
+        ImGui::End();
+        return;
+    }
+
+    char name_buf[128];
+    std::snprintf(name_buf, sizeof(name_buf), "%s", layer->name.c_str());
+    ImGui::TextUnformatted("Name");
+    ImGui::SameLine(90.0f);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputText("##layer_name", name_buf, sizeof(name_buf))) {
+        layer->name = name_buf;
+    }
+
+    ImGui::TextDisabled("Image: %s",
+                        layer->image_path.empty() ? "(group, no image)"
+                                                  : layer->image_path.c_str());
+    ImGui::TextDisabled("Size: %.0f x %.0f px", static_cast<double>(layer->size.x),
+                        static_cast<double>(layer->size.y));
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("pivot");
+        ImGui::TextUnformatted("Pivot");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat2("##pivot", &layer->pivot.x, 1.0f, 0.0f, 0.0f, "%.1f");
+        ImGui::PopID();
+
+        ImGui::PushID("pos");
+        ImGui::TextUnformatted("Position");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat2("##pos", &layer->position.x, 1.0f, 0.0f, 0.0f, "%.1f");
+        ImGui::PopID();
+
+        ImGui::TextUnformatted("Rotation");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat("##rot", &layer->rotation, 0.5f, 0.0f, 0.0f, "%.2f°");
+
+        ImGui::TextUnformatted("Scale");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragFloat2("##scale", &layer->scale.x, 0.01f, 0.0f, 0.0f, "%.3f");
+
+        if (ImGui::Button("Reset Transform")) {
+            layer->position = vec2(0.0f);
+            layer->rotation = 0.0f;
+            layer->scale = vec2(1.0f);
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextUnformatted("Z Order");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::DragInt("##z", &layer->z_order, 0.2f, -10000, 10000);
+
+        ImGui::TextUnformatted("Opacity");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##opacity", &layer->opacity, 0.0f, 1.0f, "%.3f");
+
+        ImGui::TextUnformatted("Tint");
+        ImGui::SameLine(90.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::ColorEdit4("##tint", &layer->tint.x);
+
+        ImGui::Checkbox("Visible", &layer->visible);
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("2D Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Key at frame %d", current_frame_int());
+        if (ImGui::Button("Key Layer")) {
+            key_selected_layer2d();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete Key")) {
+            delete_key_selected_layer2d();
+        }
+
+        if (scene2d_ != nullptr) {
+            const Layer2DTrack* track =
+                scene2d_->clip().find_layer_2d(layer->name);
+            if (track != nullptr) {
+                ImGui::TextDisabled(
+                    "%zu pos / %zu scale / %zu rot / %zu opacity keys",
+                    track->position.keys.size(), track->scale.keys.size(),
+                    track->rotation.keys.size(), track->opacity.keys.size());
+            } else {
+                ImGui::TextDisabled("(no keys for this layer)");
+            }
+        }
+    }
+
+    ImGui::End();
+}
+
+void Editor::draw_layer2d_gizmo(float origin_x, float origin_y, float width,
+                                float height) {
+    if (scene2d_ == nullptr) {
+        return;
+    }
+    Scene2D& scene2d = scene2d_->scene();
+    const LayerId id = scene2d.selected();
+    const Layer2D* layer = scene2d.find(id);
+    if (layer == nullptr) {
+        return;
+    }
+
+    const float aspect = (height > 0.0f) ? width / height : 1.0f;
+    // 2D mode uses an identity view and the pixel-space projection, so the
+    // gizmo sits exactly on the drawn layer.
+    const mat4 view(1.0f);
+    const mat4 proj = camera_.projection_matrix_2d(aspect);
+
+    ImGuizmo::SetOrthographic(true);
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(origin_x, origin_y, width, height);
+
+    // The gizmo edits the layer's pivot-origin world matrix (parent pivot chain
+    // * local pivot matrix), so translation reads as position and rotation and
+    // scale act about the pivot.
+    const mat4 parent_pivot = (layer->parent != kInvalidLayer)
+                                  ? scene2d.pivot_world_matrix(layer->parent)
+                                  : mat4(1.0f);
+    mat4 world = scene2d.pivot_world_matrix(id);
+
+    ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+    if (gizmo_mode_ == GizmoMode::Rotate) {
+        op = ImGuizmo::ROTATE;
+    } else if (gizmo_mode_ == GizmoMode::Scale) {
+        op = ImGuizmo::SCALE;
+    }
+
+    if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op,
+                             ImGuizmo::LOCAL, glm::value_ptr(world))) {
+        const mat4 local = glm::inverse(parent_pivot) * world;
+        Layer2D* editable = scene2d.find(id);
+        editable->position = vec2(local[3].x, local[3].y);
+
+        // Recover the Z rotation and the XY scale from the matrix columns.
+        const vec3 col0(local[0]);
+        const vec3 col1(local[1]);
+        const float sx = glm::length(vec2(col0.x, col0.y));
+        const float sy = glm::length(vec2(col1.x, col1.y));
+        // A negative determinant means the layer was flipped by the manipulator.
+        const float det = local[0][0] * local[1][1] - local[0][1] * local[1][0];
+        editable->scale = vec2(sx, det < 0.0f ? -sy : sy);
+        editable->rotation = glm::degrees(std::atan2(col0.y, col0.x));
+    }
+}
+
+void Editor::key_selected_layer2d() {
+    if (scene2d_ == nullptr) {
+        return;
+    }
+    Layer2D* layer = scene2d_->scene().selected_layer();
+    if (layer == nullptr) {
+        return;
+    }
+    const int frame = current_frame_int();
+    Layer2DTrack& track = scene2d_->clip().layer_2d(layer->name);
+    track.position.set_key(frame, layer->position);
+    track.scale.set_key(frame, layer->scale);
+    track.rotation.set_key(frame, layer->rotation);
+    track.opacity.set_key(frame, layer->opacity);
+    layers2d_changed_ = true;
+    // The timeline's end frame follows the keys so a keyed frame is reachable.
+    timeline_.frame_end = std::max(timeline_.frame_end, frame);
+}
+
+void Editor::delete_key_selected_layer2d() {
+    if (scene2d_ == nullptr) {
+        return;
+    }
+    Layer2D* layer = scene2d_->scene().selected_layer();
+    if (layer == nullptr) {
+        return;
+    }
+    const int frame = current_frame_int();
+    for (Layer2DTrack& track : scene2d_->clip().layer_2d_tracks) {
+        if (track.name != layer->name) {
+            continue;
+        }
+        track.position.remove_key(frame);
+        track.scale.remove_key(frame);
+        track.rotation.remove_key(frame);
+        track.opacity.remove_key(frame);
+        break;
+    }
+    layers2d_changed_ = true;
 }
 
 }  // namespace ms

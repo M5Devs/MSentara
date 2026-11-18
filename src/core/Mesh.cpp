@@ -131,4 +131,61 @@ MeshData make_grid(int half_extent, float cell_size) {
     return mesh;
 }
 
+MeshData make_unit_quad() {
+    MeshData mesh;
+    const vec3 normal(0.0f, 0.0f, 1.0f);
+    // Corners in pixel orientation: (0,0) top-left, y increasing downward. UVs
+    // match so an unflipped texture lands right-side up.
+    const vec3 corners[4] = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    const vec2 uvs[4] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    for (int i = 0; i < 4; ++i) {
+        Vertex v;
+        v.position = corners[i];
+        v.normal = normal;
+        v.uv = uvs[i];
+        mesh.vertices.push_back(v);
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    return mesh;
+}
+
+MeshData make_grid_2d(int half_extent, float cell_size) {
+    MeshData mesh;
+    const float extent = static_cast<float>(half_extent) * cell_size;
+    const vec3 normal(0.0f, 0.0f, 1.0f);
+
+    const auto add_line = [&](const vec3& a, const vec3& b, const vec3& color) {
+        const std::uint32_t base = static_cast<std::uint32_t>(mesh.vertices.size());
+        for (const vec3& p : {a, b}) {
+            Vertex v;
+            v.position = p;
+            v.normal = normal;
+            v.color = color;
+            mesh.vertices.push_back(v);
+        }
+        mesh.indices.push_back(base + 0);
+        mesh.indices.push_back(base + 1);
+    };
+
+    const vec3 minor(0.26f, 0.26f, 0.28f);
+    const vec3 major(0.34f, 0.34f, 0.37f);
+    const vec3 axis_x(0.70f, 0.25f, 0.25f);
+    const vec3 axis_y(0.25f, 0.55f, 0.30f);
+
+    for (int i = -half_extent; i <= half_extent; ++i) {
+        const float o = static_cast<float>(i) * cell_size;
+        const vec3 color = (i == 0) ? axis_y : ((i % 5 == 0) ? major : minor);
+        add_line(vec3(o, -extent, 0.0f), vec3(o, extent, 0.0f), color);
+    }
+    for (int i = -half_extent; i <= half_extent; ++i) {
+        const float o = static_cast<float>(i) * cell_size;
+        const vec3 color = (i == 0) ? axis_x : ((i % 5 == 0) ? major : minor);
+        add_line(vec3(-extent, o, 0.0f), vec3(extent, o, 0.0f), color);
+    }
+    return mesh;
+}
+
 }  // namespace ms

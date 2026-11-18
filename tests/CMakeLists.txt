@@ -18,6 +18,7 @@
 # executable registered with CTest; no GPU or window is required.
 
 set(MSENTARA_CORE_TESTS
+    test_2d
     test_camera
     test_ik_morph
     test_mesh

@@ -96,6 +96,20 @@ mat4 Camera::view_projection(float aspect) const {
     return projection_matrix(aspect) * view_matrix();
 }
 
+mat4 Camera::projection_matrix_2d(float aspect) const {
+    if (aspect <= 0.0f) {
+        aspect = 1.0f;
+    }
+    // Half-height in pixels is the 2D zoom; half-width follows the aspect.
+    const float half_h = std::max(distance, 0.001f);
+    const float half_w = half_h * aspect;
+    // y points down in pixel space, so the top/bottom arguments are swapped.
+    // The view matrix is identity in 2D mode, so target.xy is the view centre.
+    return glm::ortho(target.x - half_w, target.x + half_w,
+                      target.y + half_h, target.y - half_h,
+                      -1.0f, 1.0f);
+}
+
 void Camera::orbit(float dx, float dy, float sensitivity) {
     yaw -= dx * sensitivity;
     pitch += dy * sensitivity;

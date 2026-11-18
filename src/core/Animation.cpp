@@ -42,6 +42,24 @@ std::size_t upper_bound_key(const std::vector<BoneKey>& keys, float frame) {
     return lo;
 }
 
+// The span index for a frame strictly inside a non-empty key range: the index
+// `i` with keys[i-1].frame <= frame < keys[i].frame, so i is in [1, size-1].
+// The caller has already handled the hold-before/after cases.
+template <typename Key>
+std::size_t span_index(const std::vector<Key>& keys, float frame) {
+    std::size_t lo = 1;
+    std::size_t hi = keys.size();
+    while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        if (static_cast<float>(keys[mid].frame) <= frame) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -201,6 +219,185 @@ float ScalarTrack::sample(float frame, float fallback) const {
 }
 
 // ---------------------------------------------------------------------------
+// 2D layer tracks
+// ---------------------------------------------------------------------------
+
+void Vec2Track::sort_keys() {
+    std::sort(keys.begin(), keys.end(),
+              [](const Vec2Key& a, const Vec2Key& b) { return a.frame < b.frame; });
+}
+
+void Vec2Track::set_key(int frame, const vec2& value, const Bezier& bezier) {
+    for (Vec2Key& k : keys) {
+        if (k.frame == frame) {
+            k.value = value;
+            k.bezier = bezier;
+            return;
+        }
+    }
+    keys.push_back(Vec2Key{frame, value, bezier});
+    sort_keys();
+}
+
+bool Vec2Track::remove_key(int frame) {
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (keys[i].frame == frame) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Vec2Track::has_key(int frame) const {
+    for (const Vec2Key& k : keys) {
+        if (k.frame == frame) {
+            return true;
+        }
+    }
+    return false;
+}
+
+vec2 Vec2Track::sample(float frame, const vec2& fallback) const {
+    if (keys.empty()) {
+        return fallback;
+    }
+    if (frame <= static_cast<float>(keys.front().frame)) {
+        return keys.front().value;
+    }
+    if (frame >= static_cast<float>(keys.back().frame)) {
+        return keys.back().value;
+    }
+    const std::size_t right = span_index(keys, frame);
+    const Vec2Key& k0 = keys[right - 1];
+    const Vec2Key& k1 = keys[right];
+    const float span = static_cast<float>(k1.frame - k0.frame);
+    const float time = (span > 0.0f)
+                           ? (frame - static_cast<float>(k0.frame)) / span
+                           : 0.0f;
+    const float e = k0.bezier.ease(time);
+    return glm::mix(k0.value, k1.value, e);
+}
+
+int Vec2Track::frame_start() const {
+    return keys.empty() ? 0 : keys.front().frame;
+}
+
+int Vec2Track::frame_end() const {
+    return keys.empty() ? 0 : keys.back().frame;
+}
+
+void FloatTrack::sort_keys() {
+    std::sort(keys.begin(), keys.end(),
+              [](const FloatKey& a, const FloatKey& b) { return a.frame < b.frame; });
+}
+
+void FloatTrack::set_key(int frame, float value, const Bezier& bezier) {
+    for (FloatKey& k : keys) {
+        if (k.frame == frame) {
+            k.value = value;
+            k.bezier = bezier;
+            return;
+        }
+    }
+    keys.push_back(FloatKey{frame, value, bezier});
+    sort_keys();
+}
+
+bool FloatTrack::remove_key(int frame) {
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (keys[i].frame == frame) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FloatTrack::has_key(int frame) const {
+    for (const FloatKey& k : keys) {
+        if (k.frame == frame) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float FloatTrack::sample(float frame, float fallback) const {
+    if (keys.empty()) {
+        return fallback;
+    }
+    if (frame <= static_cast<float>(keys.front().frame)) {
+        return keys.front().value;
+    }
+    if (frame >= static_cast<float>(keys.back().frame)) {
+        return keys.back().value;
+    }
+    const std::size_t right = span_index(keys, frame);
+    const FloatKey& k0 = keys[right - 1];
+    const FloatKey& k1 = keys[right];
+    const float span = static_cast<float>(k1.frame - k0.frame);
+    const float time = (span > 0.0f)
+                           ? (frame - static_cast<float>(k0.frame)) / span
+                           : 0.0f;
+    const float e = k0.bezier.ease(time);
+    return k0.value + (k1.value - k0.value) * e;
+}
+
+int FloatTrack::frame_start() const {
+    return keys.empty() ? 0 : keys.front().frame;
+}
+
+int FloatTrack::frame_end() const {
+    return keys.empty() ? 0 : keys.back().frame;
+}
+
+Layer2DTrackState Layer2DTrack::sample(float frame,
+                                       const Layer2DTrackState& base) const {
+    // A channel with no keys leaves its field at the base value, so a track
+    // that only animates opacity never resets the layer's position.
+    Layer2DTrackState out = base;
+    if (!position.empty()) {
+        out.position = position.sample(frame, base.position);
+    }
+    if (!scale.empty()) {
+        out.scale = scale.sample(frame, base.scale);
+    }
+    if (!rotation.empty()) {
+        out.rotation = rotation.sample(frame, base.rotation);
+    }
+    if (!opacity.empty()) {
+        out.opacity = opacity.sample(frame, base.opacity);
+    }
+    return out;
+}
+
+int Layer2DTrack::frame_start() const {
+    int start = 0;
+    bool any = false;
+    const auto consider = [&](int f) {
+        if (!any || f < start) {
+            start = f;
+        }
+        any = true;
+    };
+    if (!position.empty()) consider(position.frame_start());
+    if (!scale.empty()) consider(scale.frame_start());
+    if (!rotation.empty()) consider(rotation.frame_start());
+    if (!opacity.empty()) consider(opacity.frame_start());
+    return any ? start : 0;
+}
+
+int Layer2DTrack::frame_end() const {
+    int end = 0;
+    end = std::max(end, position.frame_end());
+    end = std::max(end, scale.frame_end());
+    end = std::max(end, rotation.frame_end());
+    end = std::max(end, opacity.frame_end());
+    return end;
+}
+
+// ---------------------------------------------------------------------------
 // AnimationClip
 // ---------------------------------------------------------------------------
 
@@ -245,12 +442,36 @@ ScalarTrack& AnimationClip::scalar(const std::string& track_name) {
     return scalar_tracks.back();
 }
 
+const Layer2DTrack* AnimationClip::find_layer_2d(
+    const std::string& layer_name) const {
+    for (const Layer2DTrack& t : layer_2d_tracks) {
+        if (t.name == layer_name) {
+            return &t;
+        }
+    }
+    return nullptr;
+}
+
+Layer2DTrack& AnimationClip::layer_2d(const std::string& layer_name) {
+    for (Layer2DTrack& t : layer_2d_tracks) {
+        if (t.name == layer_name) {
+            return t;
+        }
+    }
+    layer_2d_tracks.push_back(Layer2DTrack{});
+    layer_2d_tracks.back().name = layer_name;
+    return layer_2d_tracks.back();
+}
+
 int AnimationClip::frame_end() const {
     int end = 0;
     for (const BoneTrack& t : bone_tracks) {
         end = std::max(end, t.frame_end());
     }
     for (const ScalarTrack& t : scalar_tracks) {
+        end = std::max(end, t.frame_end());
+    }
+    for (const Layer2DTrack& t : layer_2d_tracks) {
         end = std::max(end, t.frame_end());
     }
     end = std::max(end, camera_track.frame_end());
@@ -373,6 +594,36 @@ bool apply_camera_clip(const AnimationClip& clip, float frame, Camera& camera) {
     }
     camera.apply_vmd_state(clip.camera_track.sample(frame));
     return true;
+}
+
+bool apply_layer_2d_clip(const AnimationClip& clip, float frame, Scene2D& scene) {
+    bool applied = false;
+    for (const Layer2DTrack& track : clip.layer_2d_tracks) {
+        if (track.empty()) {
+            continue;
+        }
+        for (Layer2D& layer : scene.layers()) {
+            if (layer.name != track.name) {
+                continue;
+            }
+            // The layer's authored values are the base; a channel with no keys
+            // keeps its base value, so a track only overrides what it keys.
+            Layer2DTrackState base;
+            base.position = layer.position;
+            base.rotation = layer.rotation;
+            base.scale = layer.scale;
+            base.opacity = layer.opacity;
+
+            const Layer2DTrackState sampled = track.sample(frame, base);
+            layer.position = sampled.position;
+            layer.rotation = sampled.rotation;
+            layer.scale = sampled.scale;
+            layer.opacity = sampled.opacity;
+            applied = true;
+            break;
+        }
+    }
+    return applied;
 }
 
 }  // namespace ms

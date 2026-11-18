@@ -77,6 +77,15 @@ public:
     mat4 projection_matrix(float aspect) const;
     mat4 view_projection(float aspect) const;
 
+    // 2D-mode projection. Maps a point in *pixel space* to clip space, where
+    // pixel space has its origin at the camera target's XY and y increasing
+    // downward (the usual 2D/UI convention). `distance` is the half-height of
+    // the visible region in pixels (the 2D zoom) and `target.xy` is the pixel
+    // point at the centre of the view (the 2D pan). The 2D sprite pass and the
+    // 2D gizmo share this matrix, so a layer's world matrix is already in the
+    // space the manipulator edits. The 2D pass uses an identity view matrix.
+    mat4 projection_matrix_2d(float aspect) const;
+
     // Rotates the camera around the target. `dx`/`dy` are in pixels.
     void orbit(float dx, float dy, float sensitivity = 0.3f);
 

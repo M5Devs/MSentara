@@ -388,6 +388,148 @@ sg_sampler make_linear_sampler() {
     return sg_make_sampler(&desc);
 }
 
+// --- 2D sprite shading -----------------------------------------------------
+//
+// A textured, alpha-blended quad for 2D layers. It reuses the unskinned vertex
+// layout (position/normal/color) plus the UV attribute, so the shared
+// make_unit_quad() geometry can be drawn with it. There is no lighting: the
+// texel is multiplied by the tint (which carries the layer opacity).
+
+const char* const kSpriteVertexBody = R"(
+uniform mat4 mvp;
+uniform mat4 model;
+
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 color;
+layout(location = 3) in vec2 uv;
+
+layout(location = 0) out vec2 v_uv;
+
+void main() {
+    gl_Position = mvp * vec4(position, 1.0);
+    v_uv = uv;
+}
+)";
+
+const char* const kSpriteFragmentBody = R"(
+uniform vec4 tint;
+uniform sampler2D tex;
+
+layout(location = 0) in vec2 v_uv;
+
+layout(location = 0) out vec4 frag_color;
+
+void main() {
+    vec4 texel = texture(tex, v_uv);
+    frag_color = texel * tint;
+}
+)";
+
+const char* kSpriteVertexShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kSpriteVertexBody;
+    return source.c_str();
+}
+
+const char* kSpriteFragmentShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kSpriteFragmentBody;
+    return source.c_str();
+}
+
+sg_shader_desc make_sprite_shader_desc() {
+    sg_shader_desc desc = {};
+    desc.vertex_func.source = kSpriteVertexShaderSource();
+    desc.vertex_func.entry = "main";
+    desc.fragment_func.source = kSpriteFragmentShaderSource();
+    desc.fragment_func.entry = "main";
+
+    desc.attrs[kAttrPosition].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrNormal].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrColor].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrUv].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+
+    desc.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    desc.uniform_blocks[0].size = sizeof(SkinnedParams);
+    desc.uniform_blocks[0].layout = SG_UNIFORMLAYOUT_NATIVE;
+    desc.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
+    desc.uniform_blocks[0].glsl_uniforms[0].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "mvp";
+    desc.uniform_blocks[0].glsl_uniforms[1].type = SG_UNIFORMTYPE_MAT4;
+    desc.uniform_blocks[0].glsl_uniforms[1].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[1].glsl_name = "model";
+    desc.uniform_blocks[0].glsl_uniforms[2].type = SG_UNIFORMTYPE_FLOAT4;
+    desc.uniform_blocks[0].glsl_uniforms[2].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[2].glsl_name = "tint";
+
+    desc.views[0].texture.stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.views[0].texture.image_type = SG_IMAGETYPE_2D;
+    desc.views[0].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+    desc.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
+    desc.texture_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.texture_sampler_pairs[0].view_slot = 0;
+    desc.texture_sampler_pairs[0].sampler_slot = 0;
+    desc.texture_sampler_pairs[0].glsl_name = "tex";
+    return desc;
+}
+
+sg_pipeline make_sprite_pipeline(sg_shader shader) {
+    sg_pipeline_desc desc = {};
+    desc.shader = shader;
+    desc.layout.buffers[0].stride = sizeof(Vertex);
+    desc.layout.attrs[kAttrPosition].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrPosition].offset = offsetof(Vertex, position);
+    desc.layout.attrs[kAttrNormal].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrNormal].offset = offsetof(Vertex, normal);
+    desc.layout.attrs[kAttrColor].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrColor].offset = offsetof(Vertex, color);
+    desc.layout.attrs[kAttrUv].format = SG_VERTEXFORMAT_FLOAT2;
+    desc.layout.attrs[kAttrUv].offset = offsetof(Vertex, uv);
+
+    desc.primitive_type = SG_PRIMITIVETYPE_TRIANGLES;
+    desc.index_type = SG_INDEXTYPE_UINT32;
+    // Culling off: a layer may be mirrored by a negative scale, and a 2D quad
+    // has no back face worth hiding. Face winding is irrelevant with culling
+    // off, but keep it consistent with the shared quad geometry.
+    desc.cull_mode = SG_CULLMODE_NONE;
+    desc.face_winding = SG_FACEWINDING_CCW;
+    // No depth test: 2D paint order is the z_order sort, not depth.
+    desc.depth.pixel_format = SG_PIXELFORMAT_DEPTH;
+    desc.depth.compare = SG_COMPAREFUNC_ALWAYS;
+    desc.depth.write_enabled = false;
+
+    // Straight (non-premultiplied) alpha blending. The colour target must be
+    // declared explicitly because the offscreen target and the swapchain can
+    // differ in pixel format.
+    desc.colors[0].pixel_format = SG_PIXELFORMAT_RGBA8;
+    desc.colors[0].blend.enabled = true;
+    desc.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
+    desc.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    desc.colors[0].blend.op_rgb = SG_BLENDOP_ADD;
+    desc.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_ONE;
+    desc.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    desc.colors[0].blend.op_alpha = SG_BLENDOP_ADD;
+
+    desc.sample_count = 1;
+    desc.label = "ms-sprite";
+    return sg_make_pipeline(&desc);
+}
+
+void submit_sprite_uniforms(const mat4& mvp, const mat4& model,
+                            const vec4& tint) {
+    SkinnedParams params{};
+    std::copy_n(glm::value_ptr(mvp), 16, params.mvp);
+    std::copy_n(glm::value_ptr(model), 16, params.model);
+    params.diffuse[0] = tint.r;
+    params.diffuse[1] = tint.g;
+    params.diffuse[2] = tint.b;
+    params.diffuse[3] = tint.a;
+    const sg_range range = SG_RANGE(params);
+    sg_apply_uniforms(0, &range);
+}
+
 }  // namespace
 
 void Renderer::setup() {
@@ -414,6 +556,10 @@ void Renderer::setup() {
     skinned_pipeline_double_.id =
         make_skinned_pipeline(sg_shader{skinned_shader_}, true).id;
 
+    sg_shader_desc sprite_desc = make_sprite_shader_desc();
+    sprite_shader_ = sg_make_shader(&sprite_desc).id;
+    sprite_pipeline_.id = make_sprite_pipeline(sg_shader{sprite_shader_}).id;
+
     setup_ = true;
 }
 
@@ -434,11 +580,17 @@ void Renderer::shutdown() {
     if (skinned_pipeline_double_.valid()) {
         sg_destroy_pipeline(sg_pipeline{skinned_pipeline_double_.id});
     }
+    if (sprite_pipeline_.valid()) {
+        sg_destroy_pipeline(sg_pipeline{sprite_pipeline_.id});
+    }
     if (shader_ != 0) {
         sg_destroy_shader(sg_shader{shader_});
     }
     if (skinned_shader_ != 0) {
         sg_destroy_shader(sg_shader{skinned_shader_});
+    }
+    if (sprite_shader_ != 0) {
+        sg_destroy_shader(sg_shader{sprite_shader_});
     }
     sg_shutdown();
     setup_ = false;
@@ -623,6 +775,28 @@ void Renderer::draw_lines(const GpuMesh& mesh, const mat4& model,
     bindings.index_buffer = sg_buffer{mesh.ibuf};
     sg_apply_bindings(&bindings);
     submit_matrices(view_proj * model, model);
+    sg_draw(0, mesh.index_count, 1);
+}
+
+void Renderer::draw_sprite(const GpuMesh& mesh, const GpuTexture& texture,
+                           const mat4& model, const mat4& view_proj,
+                           const vec4& tint) {
+    if (!mesh.valid() || !sprite_pipeline_.valid()) {
+        return;
+    }
+    sg_apply_pipeline(sg_pipeline{sprite_pipeline_.id});
+
+    sg_bindings bindings = {};
+    bindings.vertex_buffers[0] = sg_buffer{mesh.vbuf};
+    bindings.index_buffer = sg_buffer{mesh.ibuf};
+    // A layer with no image samples the shared white texture, so it draws as a
+    // flat tinted rectangle rather than needing a separate path.
+    const GpuTexture& bound = texture.valid() ? texture : white_texture();
+    bindings.views[0] = sg_view{bound.view};
+    bindings.samplers[0] = sg_sampler{bound.sampler};
+    sg_apply_bindings(&bindings);
+
+    submit_sprite_uniforms(view_proj * model, model, tint);
     sg_draw(0, mesh.index_count, 1);
 }
 

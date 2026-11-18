@@ -19,16 +19,23 @@
 #include <string>
 
 #include "core/Camera.hpp"
+#include "core/Layer2D.hpp"
 #include "core/ProjectIO.hpp"
 #include "core/Scene.hpp"
 #include "core/Timeline.hpp"
 #include "platform/RenderTypes.hpp"
 #include "ui/ModelInstance.hpp"
+#include "ui/Scene2DInstance.hpp"
 
 namespace ms {
 
 // Which manipulator the gizmo is currently showing.
 enum class GizmoMode { Translate, Rotate, Scale };
+
+// Which half of the studio is active. 3D is the MMD-style viewport; 2D is the
+// cutout/vector viewport. The two share the camera's navigation but use
+// different projections and outliners.
+enum class EditorMode { ThreeD, TwoD };
 
 // An offline frame-sequence export request: render frames [frame_start,
 // frame_end] (inclusive) into `directory` as PNG files. The app performs the
@@ -65,6 +72,38 @@ public:
     // The editor does not own the model; it only reads and edits its pose.
     void set_model(ModelInstance* model) { model_ = model; }
     ModelInstance* model() { return model_; }
+
+    // The 2D scene the editor edits. Like the model, it is owned by the app.
+    void set_scene2d(Scene2DInstance* scene2d) { scene2d_ = scene2d; }
+    Scene2DInstance* scene2d() { return scene2d_; }
+
+    // Active viewport mode. Switching to 2D resets the camera to a 2D-friendly
+    // framing so a project opened in 2D mode looks right immediately.
+    EditorMode mode() const { return mode_; }
+    void set_mode(EditorMode mode);
+
+    // A 2D image import requested from the File menu: the app decodes and
+    // uploads the image (it owns the renderer) and adds a layer. The name is
+    // the layer name, which defaults to the file's stem.
+    void request_import_image2d(const std::string& path) {
+        pending_image2d_ = path;
+        has_pending_image2d_ = true;
+    }
+    bool has_pending_image2d() const { return has_pending_image2d_; }
+    std::string take_pending_image2d() {
+        has_pending_image2d_ = false;
+        return pending_image2d_;
+    }
+
+    // Set when the 2D Key button records a keyframe for the selected layer, so
+    // the app can refresh the pose. Mirrors timeline_changed().
+    bool layers2d_changed() const { return layers2d_changed_; }
+    void clear_layers2d_changed() { layers2d_changed_ = false; }
+
+    // The frame the 2D keying tools write into (the timeline's current frame).
+    int current_frame_int() const {
+        return static_cast<int>(timeline_.current_frame + 0.5f);
+    }
 
     // A load requested from the menu or the path field. The app owns the
     // renderer, so it performs the actual load and reports back via
@@ -178,12 +217,22 @@ private:
     void draw_model_gizmo(float origin_x, float origin_y, float width,
                           float height);
 
+    // 2D-mode panels and helpers.
+    void draw_layer2d_outliner();
+    void draw_layer2d_properties();
+    void draw_layer2d_gizmo(float origin_x, float origin_y, float width,
+                            float height);
+    void key_selected_layer2d();
+    void delete_key_selected_layer2d();
+
     Scene scene_;
     Camera camera_;
     Timeline timeline_;
     GizmoMode gizmo_mode_ = GizmoMode::Translate;
+    EditorMode mode_ = EditorMode::ThreeD;
 
     ModelInstance* model_ = nullptr;
+    Scene2DInstance* scene2d_ = nullptr;
 
     bool viewport_hovered_ = false;
     bool viewport_focused_ = false;
@@ -196,6 +245,8 @@ private:
     bool has_pending_load_ = false;
     std::string pending_vmd_;
     bool has_pending_vmd_ = false;
+    std::string pending_image2d_;
+    bool has_pending_image2d_ = false;
     std::string pending_project_open_;
     bool has_pending_project_open_ = false;
     std::string pending_project_save_;
@@ -203,11 +254,13 @@ private:
     ExportRequest pending_export_;
     bool has_pending_export_ = false;
     bool timeline_changed_ = false;
+    bool layers2d_changed_ = false;
     bool physics_reset_requested_ = false;
     bool use_vmd_camera_ = false;
     std::string status_;
     char path_buffer_[512] = {};
     char vmd_path_buffer_[512] = {};
+    char image2d_path_buffer_[512] = {};
     char project_path_buffer_[512] = {};
     char export_dir_buffer_[512] = {};
     int export_start_ = 0;

@@ -5,11 +5,12 @@ open-source animation tool with a Blender-like editing experience, with a
 particular focus on importing and animating **MikuMikuDance (PMX/VMD)**
 assets.
 
-This repository currently contains **Milestones 0–5**: the project skeleton, a
+This repository currently contains **Milestones 0–6**: the project skeleton, a
 working GPU viewport, the rendering-agnostic core data model, PMX/VMD import
 with skeletal skinning, morphs, append transforms, CCD-IK and rigid-body
 physics (hair/cloth), a native `.msentara` project format, VMD camera tracks,
-offline PNG sequence export, and cross-platform CI.
+offline PNG sequence export, a **2D cutout animation mode**, and cross-platform
+CI.
 
 ## Features
 
@@ -38,6 +39,13 @@ offline PNG sequence export, and cross-platform CI.
 - **VMD camera tracks**: a motion's camera keyframes drive the viewport camera
   (with roll, field of view and perspective/orthographic), toggled from the
   Timeline panel's **VMD Camera** checkbox.
+- **2D cutout animation mode** (`src/core/Layer2D.hpp`): a second editor mode
+  where the stage is a stack of image layers. Each layer has a **pivot**
+  (rotation/scale origin in image pixels) and a parent, so limbs can be posed
+  as a hierarchy. Layers import from PNG/JPG, sort by `z_order`, and animate
+  through keyed `position`/`rotation`/`scale`/`opacity` tracks. The same
+  camera-style pan/zoom and the ImGuizmo manipulator work in 2D, and the 2D
+  scene serialises into the `.msentara` project.
 - **Offline PNG sequence export**: render a frame range to numbered
   `frame_NNNN.png` files, from **File ▸ Export PNG Sequence…** or the command
   line, optionally from the motion's camera.
@@ -80,6 +88,24 @@ the GL context exists):
 
 `MSENTARA_PMX`, `MSENTARA_VMD` and `MSENTARA_PROJECT` environment variables are
 honoured as fallbacks for the corresponding flags.
+
+### 2D cutout mode
+
+Start in 2D mode and import image layers (each `--image2d` adds one cutout
+layer, bottom to top):
+
+```sh
+./build/MSentara --2d --image2d head.png --image2d body.png --image2d arm.png
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--2d` | Open in 2D cutout mode instead of the 3D viewport. |
+| `--image2d <file>` | Import an image as a 2D layer (PNG/JPG). Repeatable. |
+
+`MSENTARA_IMAGE2D` supplies a single image path when no `--image2d` flag is
+given. A project's `editor_mode` reopens the right mode, and the 2D scene,
+tracks and image paths travel with it.
 
 ### Offline PNG sequence export
 
@@ -135,6 +161,10 @@ Serve `build-web/MSentara.html` over HTTP (WebGL2 requires a secure or
 | Frame all | `.` |
 | Translate / Rotate / Scale gizmo | `G`/`W`, `R`/`E`, `S` |
 | Play / pause timeline | `Space` |
+
+In 2D mode there is no orbit: middle-drag pans and the wheel zooms, both in
+stage pixels. The gizmo shortcuts are the same, and the manipulator edits the
+selected layer's pivot.
 
 ## Project layout
 

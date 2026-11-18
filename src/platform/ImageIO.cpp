@@ -62,6 +62,31 @@ TextureData load_texture_file(const std::string& path) {
     return texture;
 }
 
+TextureData load_texture_file_2d(const std::string& path) {
+    // stbi's flip flag is global state, so clear it explicitly rather than
+    // relying on the default: a prior load_texture_file call leaves it set.
+    stbi_set_flip_vertically_on_load(0);
+
+    TextureData texture;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+    if (pixels == nullptr) {
+        return texture;
+    }
+
+    texture.width = width;
+    texture.height = height;
+    texture.channels = 4;
+    const std::size_t byte_count =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+    texture.pixels.assign(pixels, pixels + byte_count);
+
+    stbi_image_free(pixels);
+    return texture;
+}
+
 TextureData make_white_texture() {
     TextureData texture;
     texture.width = 1;

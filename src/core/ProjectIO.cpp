@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 #include "nlohmann/json.hpp"
 
@@ -48,6 +49,209 @@ vec3 vec3_from_json(const json& value, const vec3& fallback) {
     }
     return vec3(value[0].get<float>(), value[1].get<float>(),
                 value[2].get<float>());
+}
+
+json vec2_to_json(const vec2& v) {
+    return json::array({v.x, v.y});
+}
+
+vec2 vec2_from_json(const json& value, const vec2& fallback) {
+    if (!value.is_array() || value.size() < 2) {
+        return fallback;
+    }
+    if (!value[0].is_number() || !value[1].is_number()) {
+        return fallback;
+    }
+    return vec2(value[0].get<float>(), value[1].get<float>());
+}
+
+json vec4_to_json(const vec4& v) {
+    return json::array({v.x, v.y, v.z, v.w});
+}
+
+vec4 vec4_from_json(const json& value, const vec4& fallback) {
+    if (!value.is_array() || value.size() < 4) {
+        return fallback;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (!value[static_cast<std::size_t>(i)].is_number()) {
+            return fallback;
+        }
+    }
+    return vec4(value[0].get<float>(), value[1].get<float>(),
+                value[2].get<float>(), value[3].get<float>());
+}
+
+// A default-constructed Bezier is the linear curve, whose control points sit at
+// (1/3, 1/3) and (2/3, 2/3). A key using it is written without an
+// interpolation block, which keeps a plain linear track compact.
+bool bezier_is_linear(const Bezier& b) {
+    const Bezier linear = Bezier::linear();
+    return b.cp1 == linear.cp1 && b.cp2 == linear.cp2;
+}
+
+json bezier_to_json(const Bezier& b) {
+    json out;
+    out["cp1"] = vec2_to_json(b.cp1);
+    out["cp2"] = vec2_to_json(b.cp2);
+    return out;
+}
+
+Bezier bezier_from_json(const json& value) {
+    Bezier b = Bezier::linear();
+    if (!value.is_object()) {
+        return b;
+    }
+    b.cp1 = vec2_from_json(value.value("cp1", json()), b.cp1);
+    b.cp2 = vec2_from_json(value.value("cp2", json()), b.cp2);
+    return b;
+}
+
+// Serialises one key. Scalar channels (rotation, opacity) store the value
+// under "value"; vector channels (position, scale) under "value2".
+json key_scalar_to_json(int frame, float value, const Bezier& b) {
+    json entry;
+    entry["frame"] = frame;
+    entry["value"] = value;
+    if (!bezier_is_linear(b)) {
+        entry["interp"] = bezier_to_json(b);
+    }
+    return entry;
+}
+
+json key_vec2_to_json(int frame, const vec2& value, const Bezier& b) {
+    json entry;
+    entry["frame"] = frame;
+    entry["value2"] = vec2_to_json(value);
+    if (!bezier_is_linear(b)) {
+        entry["interp"] = bezier_to_json(b);
+    }
+    return entry;
+}
+
+// Reads a key array into `out`. A non-array value leaves `out` empty (the
+// channel is simply absent), matching how every other optional field behaves.
+void keys_scalar_from_json(const json& value, std::vector<ProjectKey2D>& out) {
+    if (!value.is_array()) {
+        return;
+    }
+    for (const json& entry : value) {
+        if (!entry.is_object()) {
+            continue;
+        }
+        ProjectKey2D key;
+        key.frame = entry.value("frame", 0);
+        key.value = entry.value("value", 0.0f);
+        const Bezier b = bezier_from_json(entry.value("interp", json()));
+        key.cp1 = b.cp1;
+        key.cp2 = b.cp2;
+        out.push_back(key);
+    }
+}
+
+void keys_vec2_from_json(const json& value, std::vector<ProjectKey2D>& out) {
+    if (!value.is_array()) {
+        return;
+    }
+    for (const json& entry : value) {
+        if (!entry.is_object()) {
+            continue;
+        }
+        ProjectKey2D key;
+        key.frame = entry.value("frame", 0);
+        key.value2 = vec2_from_json(entry.value("value2", json()), key.value2);
+        const Bezier b = bezier_from_json(entry.value("interp", json()));
+        key.cp1 = b.cp1;
+        key.cp2 = b.cp2;
+        out.push_back(key);
+    }
+}
+
+json layer_2d_to_json(const ProjectLayer2D& layer) {
+    json out;
+    out["name"] = layer.name;
+    out["image"] = layer.image_path;
+    out["parent"] = layer.parent;
+    out["pivot"] = vec2_to_json(layer.pivot);
+    out["position"] = vec2_to_json(layer.position);
+    out["rotation"] = layer.rotation;
+    out["scale"] = vec2_to_json(layer.scale);
+    out["z_order"] = layer.z_order;
+    out["opacity"] = layer.opacity;
+    out["tint"] = vec4_to_json(layer.tint);
+    out["visible"] = layer.visible;
+    return out;
+}
+
+ProjectLayer2D layer_2d_from_json(const json& value) {
+    ProjectLayer2D layer;
+    if (!value.is_object()) {
+        return layer;
+    }
+    layer.name = value.value("name", std::string());
+    layer.image_path = value.value("image", std::string());
+    layer.parent = value.value("parent", layer.parent);
+    layer.pivot = vec2_from_json(value.value("pivot", json()), layer.pivot);
+    layer.position =
+        vec2_from_json(value.value("position", json()), layer.position);
+    layer.rotation = value.value("rotation", layer.rotation);
+    layer.scale = vec2_from_json(value.value("scale", json()), layer.scale);
+    layer.z_order = value.value("z_order", layer.z_order);
+    layer.opacity = value.value("opacity", layer.opacity);
+    layer.tint = vec4_from_json(value.value("tint", json()), layer.tint);
+    layer.visible = value.value("visible", layer.visible);
+    return layer;
+}
+
+json layer_2d_track_to_json(const ProjectLayer2DTrack& track) {
+    json out;
+    out["name"] = track.name;
+    const auto write_scalar = [&](const char* field,
+                                  const std::vector<ProjectKey2D>& keys) {
+        if (keys.empty()) {
+            return;
+        }
+        json arr = json::array();
+        for (const ProjectKey2D& k : keys) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            arr.push_back(key_scalar_to_json(k.frame, k.value, b));
+        }
+        out[field] = arr;
+    };
+    const auto write_vec2 = [&](const char* field,
+                                const std::vector<ProjectKey2D>& keys) {
+        if (keys.empty()) {
+            return;
+        }
+        json arr = json::array();
+        for (const ProjectKey2D& k : keys) {
+            Bezier b;
+            b.cp1 = k.cp1;
+            b.cp2 = k.cp2;
+            arr.push_back(key_vec2_to_json(k.frame, k.value2, b));
+        }
+        out[field] = arr;
+    };
+    write_vec2("position", track.position);
+    write_vec2("scale", track.scale);
+    write_scalar("rotation", track.rotation);
+    write_scalar("opacity", track.opacity);
+    return out;
+}
+
+ProjectLayer2DTrack layer_2d_track_from_json(const json& value) {
+    ProjectLayer2DTrack track;
+    if (!value.is_object()) {
+        return track;
+    }
+    track.name = value.value("name", std::string());
+    keys_vec2_from_json(value.value("position", json()), track.position);
+    keys_vec2_from_json(value.value("scale", json()), track.scale);
+    keys_scalar_from_json(value.value("rotation", json()), track.rotation);
+    keys_scalar_from_json(value.value("opacity", json()), track.opacity);
+    return track;
 }
 
 json camera_to_json(const ProjectCamera& camera) {
@@ -102,6 +306,19 @@ std::string project_to_json(const Project& project) {
     out["ik_enabled"] = project.ik_enabled;
     out["physics_enabled"] = project.physics_enabled;
     out["use_vmd_camera"] = project.use_vmd_camera;
+    out["editor_mode"] = project.editor_mode;
+
+    json layers = json::array();
+    for (const ProjectLayer2D& layer : project.layers_2d) {
+        layers.push_back(layer_2d_to_json(layer));
+    }
+    out["layers_2d"] = layers;
+
+    json tracks = json::array();
+    for (const ProjectLayer2DTrack& track : project.layer2d_tracks) {
+        tracks.push_back(layer_2d_track_to_json(track));
+    }
+    out["layer2d_tracks"] = tracks;
 
     json morphs = json::array();
     for (const ProjectMorphWeight& morph : project.morphs) {
@@ -177,6 +394,34 @@ bool project_from_json(const std::string& text, Project& project,
         in.value("physics_enabled", project.physics_enabled);
     project.use_vmd_camera =
         in.value("use_vmd_camera", project.use_vmd_camera);
+
+    // Absent in a project saved before 2D existed: "3d" and empty layer lists
+    // keep those files loading unchanged.
+    project.editor_mode = in.value("editor_mode", project.editor_mode);
+    if (project.editor_mode != "2d") {
+        project.editor_mode = "3d";
+    }
+
+    if (in.contains("layers_2d") && in["layers_2d"].is_array()) {
+        for (const json& entry : in["layers_2d"]) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            project.layers_2d.push_back(layer_2d_from_json(entry));
+        }
+    }
+
+    if (in.contains("layer2d_tracks") && in["layer2d_tracks"].is_array()) {
+        for (const json& entry : in["layer2d_tracks"]) {
+            if (!entry.is_object()) {
+                continue;
+            }
+            ProjectLayer2DTrack track = layer_2d_track_from_json(entry);
+            if (!track.name.empty()) {
+                project.layer2d_tracks.push_back(std::move(track));
+            }
+        }
+    }
 
     if (in.contains("morphs") && in["morphs"].is_array()) {
         for (const json& entry : in["morphs"]) {

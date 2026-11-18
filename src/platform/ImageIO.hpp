@@ -33,6 +33,11 @@ namespace ms {
 // to a placeholder.
 TextureData load_texture_file(const std::string& path);
 
+// Decodes an image file *without* the vertical flip load_texture_file applies.
+// 2D layers use a pixel-space, y-down quad whose UVs already match the file's
+// row order, so flipping here would draw every sprite upside down.
+TextureData load_texture_file_2d(const std::string& path);
+
 // A 1x1 opaque white texture. Untextured materials sample this so the shader
 // can multiply by the texture unconditionally, with no branch.
 TextureData make_white_texture();
