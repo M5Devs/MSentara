@@ -102,6 +102,11 @@ public:
     std::vector<Bone>& bones() { return bones_; }
     const std::vector<Bone>& bones() const { return bones_; }
 
+    // Index of the bone named `name`, or -1 when the rig has no such bone. The
+    // first match wins, which is what a name-keyed lookup (a 2D layer's
+    // bound_bone, a project override) wants.
+    int find_bone(const std::string& name) const;
+
     // Fills in rest_global and inverse_bind by walking the hierarchy, and
     // caches the order in which that happened. Call after the last add_bone.
     void compute_rest();

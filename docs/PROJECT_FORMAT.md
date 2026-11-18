@@ -88,7 +88,10 @@ world units, `rotation` is Euler XYZ degrees, `scale` is a multiplier.
 ## `layers_2d`
 
 The 2D cutout layers, in paint-index order. Every field is written; only
-`name` is required on load (the rest take their defaults).
+`name` is required on load (the rest take their defaults). The skeletal
+binding keys (`bound_bone`, `bind_offset`) are written only when a layer is
+bound, so an unbound layer — and every project saved before Milestone 6B —
+stays byte-identical.
 
 ```json
 [ { "name": "head", "image": "assets/head.png",
@@ -98,7 +101,8 @@ The 2D cutout layers, in paint-index order. Every field is written; only
   { "name": "arm", "image": "assets/arm.png",
     "parent": 0, "pivot": [64.0, 32.0], "position": [60.0, 40.0],
     "rotation": 0.0, "scale": [1.0, 1.0], "z_order": 0,
-    "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true } ]
+    "opacity": 1.0, "tint": [1.0, 1.0, 1.0, 1.0], "visible": true,
+    "bound_bone": "left_arm", "bind_offset": [0.0, -12.0] } ]
 ```
 
 | Key | Type | Meaning |
@@ -114,9 +118,17 @@ The 2D cutout layers, in paint-index order. Every field is written; only
 | `opacity` | float | 0..1, multiplied into the layer's alpha. |
 | `tint` | `[r, g, b, a]` | Multiplied with the texel. |
 | `visible` | bool | Hidden layers are skipped when drawing. |
+| `bound_bone` | string | Name of a bone on the loaded model's rig this layer follows. Omitted when unbound. |
+| `bind_offset` | `[x, y]` | Offset from the bone, in the bone's local frame. Omitted when zero. |
 
 `parent` is a positional index, so a parent must appear **before** its children
 in the array. The image path is stored verbatim, exactly like `model`/`motion`.
+
+When `bound_bone` names a bone that exists on the model's skeleton, the layer's
+parent chain is replaced by that bone's posed global transform (plus
+`bind_offset`), so a cutout part follows the rig — including any CCD-IK that
+posed it. An empty or unknown `bound_bone` leaves the layer on its parent chain
+as before.
 
 ## `layer2d_tracks`
 

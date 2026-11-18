@@ -146,6 +146,15 @@ int Skeleton::add_bone(const std::string& name, int parent,
     return static_cast<int>(bones_.size()) - 1;
 }
 
+int Skeleton::find_bone(const std::string& name) const {
+    for (std::size_t i = 0; i < bones_.size(); ++i) {
+        if (bones_[i].name == name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 void Skeleton::compute_rest() {
     order_ = resolve_order(bones_);
     const int count = static_cast<int>(bones_.size());

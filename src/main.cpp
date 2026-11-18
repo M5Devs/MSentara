@@ -30,6 +30,7 @@
 #include "core/Animation.hpp"
 #include "core/Layer2D.hpp"
 #include "core/Mesh.hpp"
+#include "core/OnionSkin.hpp"
 #include "core/ProjectIO.hpp"
 #include "formats/VmdLoader.hpp"
 #include "platform/ImageIO.hpp"
@@ -316,6 +317,9 @@ void apply_project_2d(const Project& project) {
         layer->opacity = src.opacity;
         layer->tint = src.tint;
         layer->visible = src.visible;
+        // The skeletal binding (empty for an M6 file, which loads unbound).
+        layer->bound_bone = src.bound_bone;
+        layer->bind_offset = src.bind_offset;
     }
 
     // Rebuild the clip's layer tracks.
@@ -384,8 +388,9 @@ void save_project_file(const std::string& path) {
 
 // Draws the scene (grid, scene entities, loaded model) into the currently
 // active pass, using the editor camera. Shared by the interactive frame and the
-// offline exporter so the two always agree.
-void render_scene_into_pass() {
+// offline exporter so the two always agree. `draw_onion` is set only by the
+// interactive path: an offline export must contain the current frame alone.
+void render_scene_into_pass(bool draw_onion) {
     const float aspect =
         (g_viewport.height > 0)
             ? static_cast<float>(g_viewport.width) /
@@ -396,9 +401,41 @@ void render_scene_into_pass() {
     // projection; the 3D grid, cube and model are skipped entirely.
     if (g_editor.mode() == EditorMode::TwoD) {
         const mat4 proj2d = g_editor.camera().projection_matrix_2d(aspect);
+        // A loaded model's skeleton can drive bone-bound layers, so pass it
+        // through when present (its pose already includes any CCD-IK).
+        const Skeleton* skeleton = nullptr;
+        const Pose* pose = nullptr;
+        if (g_model.valid()) {
+            skeleton = &g_model.model().skeleton;
+            pose = &g_model.pose();
+        }
+
+        // Onion skinning: ghosted neighbouring frames, drawn behind the
+        // current frame. Each ghost is a copy of the scene with its keyed
+        // layer transforms evaluated at that frame (bone-bound layers keep the
+        // current bone pose, which is the common case for a keyframed cutout).
+        if (draw_onion) {
+            const OnionSkinSettings& onion = g_editor.onion_skin();
+            const int current = g_editor.current_frame_int();
+            const std::vector<OnionFrame> ghosts = onion_skin_window(
+                onion, current, g_editor.timeline().frame_start,
+                g_editor.timeline().frame_end);
+            for (const OnionFrame& ghost : ghosts) {
+                Scene2D copy = g_scene2d.scene();
+                if (g_scene2d.has_clip()) {
+                    apply_layer_2d_clip(g_scene2d.clip(),
+                                        static_cast<float>(ghost.frame), copy);
+                }
+                g_scene2d.draw_ghost_frame(
+                    g_renderer, g_quad, proj2d, copy,
+                    onion_ghost_tint(ghost.offset, onion.opacity), skeleton,
+                    pose);
+            }
+        }
+
         // The 2D grid is a line mesh, so it draws with the line pipeline.
         g_renderer.draw_lines(g_grid_2d, mat4(1.0f), proj2d);
-        g_scene2d.draw(g_renderer, g_quad, proj2d);
+        g_scene2d.draw(g_renderer, g_quad, proj2d, skeleton, pose);
         return;
     }
 
@@ -525,6 +562,11 @@ bool step_export() {
         if (g_scene2d.has_clip()) {
             apply_layer_2d_clip(g_scene2d.clip(), f, g_scene2d.scene());
         }
+        // Bone-bound layers read the model's pose, so keep it in step with the
+        // exported frame too (no skinning needed for a 2D render).
+        if (g_model.valid() && g_model.has_animation()) {
+            g_model.apply_animation(f);
+        }
     } else if (g_model.valid()) {
         if (g_model.has_animation()) {
             g_model.apply_animation(f);
@@ -544,7 +586,9 @@ bool step_export() {
     // fall in the same sokol frame, so there is deliberately no sg_commit()
     // between them; the single commit at the end of the step flushes both.
     g_renderer.begin_offscreen_pass(g_viewport, kViewportBg);
-    render_scene_into_pass();
+    // An offline export never draws onion-skin ghosts: the sequence must be the
+    // current frame alone.
+    render_scene_into_pass(false);
     // Read while the pass's framebuffer is still current (sokol unbinds it on
     // end_pass), then flip/convert in memory.
     const bool read_ok =
@@ -796,6 +840,12 @@ void frame_cb() {
             apply_layer_2d_clip(g_scene2d.clip(), g_editor.timeline().current_frame,
                                 g_scene2d.scene());
         }
+        // Bone-bound layers follow the model's skeleton, so keep its pose in
+        // step with the timeline too. No skinning is needed here — only the
+        // bone globals a bound layer reads.
+        if (g_model.valid() && g_model.has_animation() && frame_dirty) {
+            g_model.apply_animation(g_editor.timeline().current_frame);
+        }
     } else if (g_model.has_animation() && frame_dirty) {
         g_model.apply_animation(g_editor.timeline().current_frame);
     }
@@ -827,10 +877,11 @@ void frame_cb() {
     }
 
     // 1) Render the scene (3D or 2D, per the editor mode) into the offscreen
-    // target.
+    // target. The interactive path is the only one that draws onion-skin
+    // ghosts, so an export stays a clean single frame.
     if (g_viewport.valid()) {
         g_renderer.begin_offscreen_pass(g_viewport, kViewportBg);
-        render_scene_into_pass();
+        render_scene_into_pass(true);
         g_renderer.end_pass();
     }
 

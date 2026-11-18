@@ -21,7 +21,9 @@
 
 #include "core/Animation.hpp"
 #include "core/Layer2D.hpp"
+#include "core/OnionSkin.hpp"
 #include "core/ProjectIO.hpp"
+#include "core/Skeleton.hpp"
 
 using namespace ms;
 using namespace ms::test;
@@ -455,6 +457,212 @@ void test_projection_2d_maps_pixels_to_clip() {
     MS_CHECK(nearly(shifted.x, 0.0f, 1e-3f));
 }
 
+// --- M6B: bone binding ----------------------------------------------------
+
+// Builds a two-bone rig (root at the origin, child offset +100 on X) and
+// evaluates it, returning the skeleton and pose. The pose is a fresh rest pose.
+void build_two_bone_rig(Skeleton& skeleton, Pose& pose) {
+    skeleton.add_bone("root", -1, vec3(0.0f, 0.0f, 0.0f));
+    skeleton.add_bone("arm", 0, vec3(100.0f, 0.0f, 0.0f));
+    skeleton.compute_rest();
+    pose.resize(skeleton.size());
+    evaluate_pose(skeleton, pose);
+}
+
+void test_bone_binding_overrides_parent() {
+    // A layer bound to a bone ignores its parent chain: the bone's global
+    // replaces the parent's world matrix. Bind the child to a bone whose rest
+    // global places it at +100 on X, with the layer parented to a layer at
+    // +500 on X, and confirm the bone wins.
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+
+    Scene2D s;
+    const LayerId parent = s.add_layer("parent");
+    s.find(parent)->position = vec2(500.0f, 0.0f);
+    const LayerId child = s.add_layer("arm", parent);
+    s.find(child)->bound_bone = "arm";
+    s.find(child)->position = vec2(0.0f, 0.0f);
+
+    const vec2 p = s.world_pivot(child, &skeleton, &pose);
+    // Bone "arm" sits at +100 on X; the layer's own position is zero, so the
+    // pivot lands there and the +500 parent is ignored entirely.
+    MS_CHECK(nearly(p, vec2(100.0f, 0.0f), 1e-3f));
+}
+
+void test_bone_binding_uses_posed_global() {
+    // Moving the bone (via its pose delta) must move the bound layer.
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+    // Translate the child bone by +30 on Y in its local space.
+    pose.delta[1].position = vec3(0.0f, 30.0f, 0.0f);
+    evaluate_pose(skeleton, pose);
+
+    Scene2D s;
+    const LayerId id = s.add_layer("arm");
+    s.find(id)->bound_bone = "arm";
+
+    const vec2 p = s.world_pivot(id, &skeleton, &pose);
+    MS_CHECK(nearly(p, vec2(100.0f, 30.0f), 1e-3f));
+}
+
+void test_bone_binding_unknown_bone_falls_back() {
+    // An unknown bone name is not a binding: the layer keeps its normal parent
+    // chain (here, the root, so its own position applies).
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+
+    Scene2D s;
+    const LayerId id = s.add_layer("arm");
+    s.find(id)->bound_bone = "does_not_exist";
+    s.find(id)->position = vec2(7.0f, 9.0f);
+
+    const vec2 p = s.world_pivot(id, &skeleton, &pose);
+    MS_CHECK(nearly(p, vec2(7.0f, 9.0f), 1e-3f));
+}
+
+void test_bone_binding_through_parent_chain() {
+    // A child of a bound layer inherits the bone transform through the normal
+    // parent chain: the parent is placed by its bone, and the child offsets
+    // from that.
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+
+    Scene2D s;
+    const LayerId bound = s.add_layer("arm");
+    s.find(bound)->bound_bone = "arm";
+    const LayerId child = s.add_layer("hand", bound);
+    s.find(child)->position = vec2(10.0f, 5.0f);
+
+    const vec2 p = s.world_pivot(child, &skeleton, &pose);
+    MS_CHECK(nearly(p, vec2(110.0f, 5.0f), 1e-3f));
+}
+
+void test_pivot_base_matrix_inverts_to_local() {
+    // pivot_world_matrix() == pivot_base_matrix() * pivot_matrix(), which is
+    // what the gizmo relies on to recover a local transform. Verify the
+    // identity holds for a bound layer.
+    Skeleton skeleton;
+    Pose pose;
+    build_two_bone_rig(skeleton, pose);
+
+    Scene2D s;
+    const LayerId id = s.add_layer("arm");
+    Layer2D* layer = s.find(id);
+    layer->bound_bone = "arm";
+    layer->position = vec2(3.0f, 4.0f);
+    layer->rotation = 30.0f;
+    layer->pivot = vec2(2.0f, 1.0f);
+
+    const mat4 base = s.pivot_base_matrix(id, &skeleton, &pose);
+    const mat4 expected = base * layer->pivot_matrix();
+    const mat4 actual = s.pivot_world_matrix(id, &skeleton, &pose);
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            MS_CHECK(nearly(actual[c][r], expected[c][r], 1e-4f));
+        }
+    }
+}
+
+void test_project_round_trip_bone_binding() {
+    // A layer's bound_bone and bind_offset survive a save/load cycle, and an
+    // unbound layer writes neither key.
+    Project p;
+    p.editor_mode = "2d";
+    ProjectLayer2D bound;
+    bound.name = "arm";
+    bound.image_path = "arm.png";
+    bound.bound_bone = "shoulder";
+    bound.bind_offset = vec2(4.0f, -2.0f);
+    p.layers_2d.push_back(bound);
+    ProjectLayer2D unbound;
+    unbound.name = "bg";
+    p.layers_2d.push_back(unbound);
+
+    const std::string text = project_to_json(p);
+    MS_CHECK(text.find("\"bound_bone\"") != std::string::npos);
+    MS_CHECK(text.find("\"bind_offset\"") != std::string::npos);
+
+    Project loaded;
+    std::string error;
+    MS_CHECK_MSG(project_from_json(text, loaded, error), error);
+    MS_CHECK(loaded.layers_2d[0].bound_bone == "shoulder");
+    MS_CHECK_NEAR(loaded.layers_2d[0].bind_offset, vec2(4.0f, -2.0f));
+    MS_CHECK(loaded.layers_2d[1].bound_bone.empty());
+    MS_CHECK_NEAR(loaded.layers_2d[1].bind_offset, vec2(0.0f, 0.0f));
+}
+
+void test_project_omits_empty_binding() {
+    // An unbound layer (the common case, and every M6 file) writes no binding
+    // keys at all, so old projects stay byte-identical.
+    Project p;
+    p.editor_mode = "2d";
+    ProjectLayer2D layer;
+    layer.name = "bg";
+    layer.image_path = "bg.png";
+    p.layers_2d.push_back(layer);
+
+    const std::string text = project_to_json(p);
+    MS_CHECK(text.find("\"bound_bone\"") == std::string::npos);
+    MS_CHECK(text.find("\"bind_offset\"") == std::string::npos);
+}
+
+// --- M6B: onion skinning --------------------------------------------------
+
+void test_onion_window_disabled_is_empty() {
+    OnionSkinSettings s;
+    s.enabled = false;
+    s.prev_frames = 3;
+    s.next_frames = 3;
+    MS_CHECK(onion_skin_window(s, 10, 0, 100).empty());
+}
+
+void test_onion_window_orders_far_to_near() {
+    // With 2 previous and 1 next frame at frame 10, the window is
+    // {8, 9, 11}, past frames first (farthest first) then future.
+    OnionSkinSettings s;
+    s.enabled = true;
+    s.prev_frames = 2;
+    s.next_frames = 1;
+    const std::vector<OnionFrame> w = onion_skin_window(s, 10, 0, 100);
+    MS_CHECK(w.size() == 3);
+    MS_CHECK(w[0].frame == 8 && w[0].offset == -2);
+    MS_CHECK(w[1].frame == 9 && w[1].offset == -1);
+    MS_CHECK(w[2].frame == 11 && w[2].offset == 1);
+}
+
+void test_onion_window_clamps_to_timeline() {
+    // Frames outside [start, end] are dropped, and the current frame is never
+    // included. At frame 1 of [1, 5] with 2 prev / 2 next, only {2, 3} remain.
+    OnionSkinSettings s;
+    s.enabled = true;
+    s.prev_frames = 2;
+    s.next_frames = 2;
+    const std::vector<OnionFrame> w = onion_skin_window(s, 1, 1, 5);
+    MS_CHECK(w.size() == 2);
+    MS_CHECK(w[0].frame == 3 && w[0].offset == 2);
+    MS_CHECK(w[1].frame == 2 && w[1].offset == 1);
+    for (const OnionFrame& f : w) {
+        MS_CHECK(f.frame != 1);
+    }
+}
+
+void test_onion_ghost_tint_direction_and_fade() {
+    // Past frames are cool (blue dominates), future frames warm (red
+    // dominates), and a farther ghost is fainter than a nearer one.
+    const vec4 past_near = onion_ghost_tint(-1, 0.5f);
+    const vec4 past_far = onion_ghost_tint(-3, 0.5f);
+    const vec4 future = onion_ghost_tint(1, 0.5f);
+    MS_CHECK(past_near.b > past_near.r);
+    MS_CHECK(future.r > future.b);
+    MS_CHECK(past_near.a > past_far.a);
+    MS_CHECK_NEAR(past_near.a, 0.5f);
+}
+
 }  // namespace
 
 int main() {
@@ -485,5 +693,17 @@ int main() {
     test_project_rejects_bad_editor_mode();
 
     test_projection_2d_maps_pixels_to_clip();
+
+    test_bone_binding_overrides_parent();
+    test_bone_binding_uses_posed_global();
+    test_bone_binding_unknown_bone_falls_back();
+    test_bone_binding_through_parent_chain();
+    test_pivot_base_matrix_inverts_to_local();
+    test_project_round_trip_bone_binding();
+    test_project_omits_empty_binding();
+    test_onion_window_disabled_is_empty();
+    test_onion_window_orders_far_to_near();
+    test_onion_window_clamps_to_timeline();
+    test_onion_ghost_tint_direction_and_fade();
     return summary("test_2d");
 }

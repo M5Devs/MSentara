@@ -22,6 +22,7 @@
 #include "core/Animation.hpp"
 #include "core/Layer2D.hpp"
 #include "core/Mesh.hpp"
+#include "core/Skeleton.hpp"
 #include "platform/Renderer.hpp"
 #include "platform/RenderTypes.hpp"
 
@@ -66,15 +67,30 @@ public:
 
     // Draws every visible layer in z-order. `quad` is the shared unit quad and
     // `view_proj` the 2D projection. Must be called inside a pass.
-    void draw(Renderer& renderer, const GpuMesh& quad,
-              const mat4& view_proj) const;
+    //
+    // When `skeleton` and `pose` are given, a layer bound to a resolvable bone
+    // is placed by that bone's posed transform instead of its parent chain.
+    void draw(Renderer& renderer, const GpuMesh& quad, const mat4& view_proj,
+              const Skeleton* skeleton = nullptr,
+              const Pose* pose = nullptr) const;
+
+    // Draws every layer of `ghost_scene` with a single forced `tint` (for onion
+    // skinning). `ghost_scene` is expected to be a copy of this scene whose
+    // layer tracks have been evaluated at a neighbouring frame, so its layer
+    // ids align with the textures here. Layers with nothing to draw are
+    // skipped. Must be called inside a pass.
+    void draw_ghost_frame(Renderer& renderer, const GpuMesh& quad,
+                          const mat4& view_proj, const Scene2D& ghost_scene,
+                          const vec4& tint, const Skeleton* skeleton = nullptr,
+                          const Pose* pose = nullptr) const;
 
     // Releases every GPU texture and forgets the scene.
     void clear(Renderer& renderer);
 
     // The model matrix that scales the unit quad to a layer's pixel size and
     // applies the layer's world transform. Shared by draw() and the 2D gizmo.
-    mat4 layer_model_matrix(LayerId id) const;
+    mat4 layer_model_matrix(LayerId id, const Skeleton* skeleton = nullptr,
+                            const Pose* pose = nullptr) const;
 
 private:
     Scene2D scene_;

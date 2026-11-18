@@ -2,12 +2,23 @@
 
 Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
 docking + ImGuizmo + glm). Repo root `MSentara/`, GPLv3. Repo remote is
-`M5Devs/MSentara`. Milestones 0–6 complete: skeleton+viewport, PMX loading +
+`M5Devs/MSentara`. Milestones 0–6B complete: skeleton+viewport, PMX loading +
 skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI,
 PMX rigid-body physics (hair/cloth), VMD camera tracks + offline PNG
-sequence export, and a 2D cutout animation mode. **Per-milestone detail lives
+sequence export, a 2D cutout animation mode, and **M6B: 2D bone binding + a
+keyframe easing editor + onion skinning**. **Per-milestone detail lives
 in the daily logs** (e.g. `2026-11-17.md`); this index keeps only durable,
 cross-cutting facts.
+
+## Workflow rule — READ THIS FIRST
+
+**NEVER create feature branches or open Pull Requests (PRs) — always commit
+and push directly to `main` (`origin/main`) so the repo stays clean and GitHub
+Actions CI triggers automatically.** Work on `main`, verify locally, then
+`git commit` + `git push origin main`. Do not `git checkout -b`, do not push a
+feature branch, and do not call a create-PR tool. (PRs opened with the repo's
+own token also fail to trigger CI because of GitHub's recursion guard, which is
+another reason to push to `main` directly.)
 
 ## Build memory limit — READ THIS FIRST
 
@@ -134,3 +145,28 @@ offscreen viewport sample an empty texture while the ImGui UI looked fine.
   (red top / blue bottom, for orientation checks); CI renders it in 2D and
   asserts the exported frame count (`--export-start/--export-end` make the
   count deterministic). Export dirs `out-*/` are gitignored.
+- **2D bone binding (M6B)**: `Layer2D::bound_bone` (a bone *name*) +
+  `bind_offset` (vec2, in the bone's local frame). When the name resolves on
+  the passed skeleton+pose, the bone's posed `global` **replaces** the layer's
+  parent chain; otherwise it falls back to the parent chain (empty/unknown name
+  is not an error). Threaded through `Scene2D::world_matrix(id, skel, pose)` /
+  `pivot_world_matrix` / `pivot_base_matrix` (all default the pointers to
+  nullptr, so existing 1-arg callers still compile). The gizmo disables editing
+  for a bound layer (the bone drives it). Persisted in `ProjectLayer2D` as
+  `bound_bone`/`bind_offset`, **written only when bound** so old files are
+  byte-identical. 2D mode also drives the model's animation now (so bound bones
+  follow the timeline); a bound ghost in onion skinning keeps the *current*
+  pose (documented).
+- **Onion skinning (M6B)**: pure maths in `src/core/OnionSkin.{hpp,cpp}`
+  (`onion_skin_window` = far→near per side, clamped to the timeline, current
+  frame excluded; `onion_ghost_tint` = past cool blue / future warm orange,
+  alpha fading with distance). Settings live on the Editor; the app draws the
+  ghosts in `render_scene_into_pass(true)` — the **export path passes `false`**
+  so an offline sequence is the current frame alone.
+- **Keyframe easing editor (M6B)**: one `draw_bezier_editor()` (anonymous ns in
+  `Editor.cpp`) with preset buttons + an interactive 0..1 canvas (drag either
+  interior control point; `Editor::easing_drag_handle_` holds the drag across
+  frames). Works in 2D (selected layer's channel via `active_easing_curve()`)
+  and 3D (selected bone's key: `easing_bone_channel_` 0..3 = X/Y/Z/Rotation,
+  via the new non-const `ModelInstance::clip()` — guard with `find_bone` first
+  because `AnimationClip::bone()` creates a track when missing).

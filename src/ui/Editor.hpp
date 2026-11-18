@@ -18,10 +18,13 @@
 
 #include <string>
 
+#include "core/Animation.hpp"
 #include "core/Camera.hpp"
 #include "core/Layer2D.hpp"
+#include "core/OnionSkin.hpp"
 #include "core/ProjectIO.hpp"
 #include "core/Scene.hpp"
+#include "core/Skeleton.hpp"
 #include "core/Timeline.hpp"
 #include "platform/RenderTypes.hpp"
 #include "ui/ModelInstance.hpp"
@@ -36,6 +39,11 @@ enum class GizmoMode { Translate, Rotate, Scale };
 // cutout/vector viewport. The two share the camera's navigation but use
 // different projections and outliners.
 enum class EditorMode { ThreeD, TwoD };
+
+// Which 2D channel the keyframe easing editor is bound to. Keying a 2D layer
+// writes all four channels at once, so the user picks which one's curve to
+// shape.
+enum class Easing2DChannel { Position, Scale, Rotation, Opacity };
 
 // An offline frame-sequence export request: render frames [frame_start,
 // frame_end] (inclusive) into `directory` as PNG files. The app performs the
@@ -76,6 +84,12 @@ public:
     // The 2D scene the editor edits. Like the model, it is owned by the app.
     void set_scene2d(Scene2DInstance* scene2d) { scene2d_ = scene2d; }
     Scene2DInstance* scene2d() { return scene2d_; }
+
+    // Onion-skin settings (2D viewport only). Read by the app's 2D render path,
+    // which draws the ghosted neighbouring frames behind the current one; never
+    // applied during an offline export.
+    OnionSkinSettings& onion_skin() { return onion_skin_; }
+    const OnionSkinSettings& onion_skin() const { return onion_skin_; }
 
     // Active viewport mode. Switching to 2D resets the camera to a 2D-friendly
     // framing so a project opened in 2D mode looks right immediately.
@@ -222,14 +236,30 @@ private:
     void draw_layer2d_properties();
     void draw_layer2d_gizmo(float origin_x, float origin_y, float width,
                             float height);
+    void draw_onion_skin_controls();
+    void draw_easing_editor();
     void key_selected_layer2d();
     void delete_key_selected_layer2d();
+
+    // The keyed Bezier for the selected layer's active channel at the current
+    // frame, or nullptr when there is no such key. The easing editor reads and
+    // writes the curve in place through this.
+    Bezier* active_easing_curve();
+    const char* active_easing_channel_name() const;
 
     Scene scene_;
     Camera camera_;
     Timeline timeline_;
     GizmoMode gizmo_mode_ = GizmoMode::Translate;
     EditorMode mode_ = EditorMode::ThreeD;
+
+    OnionSkinSettings onion_skin_;
+    // Which channel the keyframe easing editor shapes. The frame it edits is
+    // always the timeline's current frame (the "active" keyframe). In 3D the
+    // channel selects one of a bone key's four curves (X/Y/Z/Rotation).
+    Easing2DChannel easing_channel_ = Easing2DChannel::Position;
+    int easing_bone_channel_ = 3;  // 0=X, 1=Y, 2=Z, 3=Rotation
+    int easing_drag_handle_ = -1;  // which control point is being dragged, or -1
 
     ModelInstance* model_ = nullptr;
     Scene2DInstance* scene2d_ = nullptr;

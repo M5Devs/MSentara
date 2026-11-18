@@ -24,6 +24,12 @@
 
 namespace ms {
 
+// Forward declarations: a layer may bind to a bone on a skeleton, but the
+// core 2D header stays free of the (heavier) skeletal headers by only taking
+// pointers to them.
+class Skeleton;
+struct Pose;
+
 // ---------------------------------------------------------------------------
 // 2D layers: a cutout-animation rig.
 //
@@ -55,6 +61,21 @@ inline constexpr LayerId kInvalidLayer = -1;
 struct Layer2D {
     std::string name;
     std::string image_path;  // PNG/JPG on disk; empty for a pure group node
+
+    // Optional skeletal binding: the name of a bone on the active skeleton
+    // (a 3D rig or a 2D rig) that drives this layer. When set, the layer's
+    // world transform is replaced by that bone's model-space transform, so a
+    // cutout part follows a posed (and CCD-IK-solved) bone. Empty means the
+    // layer is driven by its own transform and its parent chain, as before.
+    // Kept as a name (not an index) so it survives a model re-export.
+    std::string bound_bone;
+
+    // Where the layer sits relative to its bound bone, in the bone's own local
+    // space. Applied after the bone's global transform, so the cutout can be
+    // nudged onto the bone; ignored while `bound_bone` is empty or the bone
+    // cannot be resolved. Binding captures this so a freshly bound layer does
+    // not jump.
+    vec2 bind_offset{0.0f, 0.0f};
 
     // Parent index into the owning Scene2D, or kInvalidLayer for a root.
     LayerId parent = kInvalidLayer;
@@ -110,16 +131,33 @@ public:
     // World matrix: the parent chain composed with this layer's local matrix.
     // A malformed parent (out of range) is treated as a root so evaluation
     // never loops or reads out of bounds.
-    mat4 world_matrix(LayerId id) const;
+    //
+    // When `skeleton` and `pose` are given and this layer (or an ancestor) is
+    // bound to a resolvable bone, that bone's posed model-space transform
+    // replaces the parent chain, so a cutout part follows the bone (including
+    // any CCD-IK that posed it). Passing nulls, or an unresolvable bone name,
+    // falls back to the plain parent chain, so an unbound scene is unchanged.
+    mat4 world_matrix(LayerId id, const Skeleton* skeleton = nullptr,
+                      const Pose* pose = nullptr) const;
 
     // World matrix built from each ancestor's pivot_matrix(), so its origin is
     // this layer's pivot. The 2D gizmo manipulates this form: translation then
     // reads as the layer's position and rotation/scale act about the pivot.
-    mat4 pivot_world_matrix(LayerId id) const;
+    // Bone bindings are honoured exactly as in world_matrix().
+    mat4 pivot_world_matrix(LayerId id, const Skeleton* skeleton = nullptr,
+                            const Pose* pose = nullptr) const;
 
     // The world-space pivot position, i.e. where the gizmo should sit and the
     // point the layer rotates about.
-    vec2 world_pivot(LayerId id) const;
+    vec2 world_pivot(LayerId id, const Skeleton* skeleton = nullptr,
+                     const Pose* pose = nullptr) const;
+
+    // The matrix the layer's pivot matrix multiplies onto: its bound bone's
+    // global matrix (plus bind offset) when bound, otherwise its parent's pivot
+    // world matrix, otherwise identity. The gizmo inverts this to turn a
+    // manipulated world matrix back into the layer's local transform.
+    mat4 pivot_base_matrix(LayerId id, const Skeleton* skeleton = nullptr,
+                           const Pose* pose = nullptr) const;
 
     // Layer indices sorted by z_order (ascending), ties broken by insertion
     // order. This is the draw order the renderer walks.
@@ -132,6 +170,17 @@ public:
     void clear();
 
 private:
+    // The matrix a layer's own local matrix multiplies onto: its bound bone's
+    // global matrix (plus bind offset) when it has a resolvable binding,
+    // otherwise its parent's world matrix, otherwise identity.
+    mat4 world_parent_matrix(LayerId id, const Skeleton* skeleton,
+                             const Pose* pose) const;
+
+    // As above, but built from the parent's *pivot* world matrix, for
+    // pivot_world_matrix().
+    mat4 pivot_parent_matrix(LayerId id, const Skeleton* skeleton,
+                             const Pose* pose) const;
+
     std::vector<Layer2D> layers_;
     LayerId selected_ = kInvalidLayer;
 };

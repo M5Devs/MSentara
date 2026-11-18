@@ -93,18 +93,21 @@ bool Scene2DInstance::set_layer_image(LayerId id, const std::string& path,
     return true;
 }
 
-mat4 Scene2DInstance::layer_model_matrix(LayerId id) const {
+mat4 Scene2DInstance::layer_model_matrix(LayerId id, const Skeleton* skeleton,
+                                         const Pose* pose) const {
     const Layer2D* layer = scene_.find(id);
     if (layer == nullptr) {
         return mat4(1.0f);
     }
     // The shared quad is unit-sized, so scale it to the image's pixel size
     // before applying the layer's world transform.
-    return scene_.world_matrix(id) * glm::scale(mat4(1.0f), vec3(layer->size, 1.0f));
+    return scene_.world_matrix(id, skeleton, pose) *
+           glm::scale(mat4(1.0f), vec3(layer->size, 1.0f));
 }
 
 void Scene2DInstance::draw(Renderer& renderer, const GpuMesh& quad,
-                           const mat4& view_proj) const {
+                           const mat4& view_proj, const Skeleton* skeleton,
+                           const Pose* pose) const {
     for (const LayerId id : scene_.draw_order()) {
         const Layer2D* layer = scene_.find(id);
         if (layer == nullptr || !layer->visible || layer->opacity <= 0.0f) {
@@ -119,8 +122,33 @@ void Scene2DInstance::draw(Renderer& renderer, const GpuMesh& quad,
         // layer be coloured without touching its image.
         const vec4 tint(layer->tint.r, layer->tint.g, layer->tint.b,
                         layer->tint.a * layer->opacity);
-        renderer.draw_sprite(quad, texture, layer_model_matrix(id), view_proj,
+        renderer.draw_sprite(quad, texture,
+                             layer_model_matrix(id, skeleton, pose), view_proj,
                              tint);
+    }
+}
+
+void Scene2DInstance::draw_ghost_frame(Renderer& renderer, const GpuMesh& quad,
+                                       const mat4& view_proj,
+                                       const Scene2D& ghost_scene,
+                                       const vec4& tint,
+                                       const Skeleton* skeleton,
+                                       const Pose* pose) const {
+    for (const LayerId id : ghost_scene.draw_order()) {
+        const Layer2D* layer = ghost_scene.find(id);
+        if (layer == nullptr || !layer->visible) {
+            continue;
+        }
+        // A ghost is drawn even at zero layer opacity (the whole point is to
+        // show a neighbouring frame), but only when there is geometry to draw.
+        if (layer->size.x <= 0.0f || layer->size.y <= 0.0f) {
+            continue;
+        }
+        const GpuTexture& texture = textures_[static_cast<std::size_t>(id)];
+        renderer.draw_sprite(quad, texture,
+                             ghost_scene.world_matrix(id, skeleton, pose) *
+                                 glm::scale(mat4(1.0f), vec3(layer->size, 1.0f)),
+                             view_proj, tint);
     }
 }
 

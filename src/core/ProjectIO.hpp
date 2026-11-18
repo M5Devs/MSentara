@@ -86,6 +86,11 @@ struct ProjectLayer2D {
     float opacity = 1.0f;
     vec4 tint{1.0f, 1.0f, 1.0f, 1.0f};
     bool visible = true;
+    // Skeletal binding. Empty `bound_bone` (the default) means the layer is
+    // driven by its own transform, so an older file that lacks these fields
+    // loads unchanged.
+    std::string bound_bone;
+    vec2 bind_offset{0.0f, 0.0f};
 };
 
 // A serialised 2D keyframe channel. Only channels with keys are written, so a

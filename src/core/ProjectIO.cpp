@@ -180,6 +180,14 @@ json layer_2d_to_json(const ProjectLayer2D& layer) {
     out["opacity"] = layer.opacity;
     out["tint"] = vec4_to_json(layer.tint);
     out["visible"] = layer.visible;
+    // The skeletal binding is omitted when unused so an unbound layer stays
+    // compact (and an older reader sees no new keys).
+    if (!layer.bound_bone.empty()) {
+        out["bound_bone"] = layer.bound_bone;
+        if (layer.bind_offset != vec2(0.0f)) {
+            out["bind_offset"] = vec2_to_json(layer.bind_offset);
+        }
+    }
     return out;
 }
 
@@ -200,6 +208,11 @@ ProjectLayer2D layer_2d_from_json(const json& value) {
     layer.opacity = value.value("opacity", layer.opacity);
     layer.tint = vec4_from_json(value.value("tint", json()), layer.tint);
     layer.visible = value.value("visible", layer.visible);
+    // A missing binding defaults to empty (unbound), so an M6 file loads with
+    // its layers driven by their own transforms exactly as before.
+    layer.bound_bone = value.value("bound_bone", std::string());
+    layer.bind_offset =
+        vec2_from_json(value.value("bind_offset", json()), layer.bind_offset);
     return layer;
 }
 

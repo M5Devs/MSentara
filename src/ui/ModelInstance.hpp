@@ -87,6 +87,9 @@ public:
     // does not evaluate it; call apply_animation() with the frame to play.
     bool has_animation() const { return has_clip_; }
     const AnimationClip& clip() const { return clip_; }
+    // Mutable access, for editing a loaded motion in place (e.g. shaping a
+    // keyframe's easing curve). Does not re-evaluate the pose.
+    AnimationClip& clip() { return clip_; }
     void set_clip(AnimationClip clip) {
         clip_ = std::move(clip);
         has_clip_ = !clip_.empty();

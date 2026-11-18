@@ -19,7 +19,31 @@
 #include <algorithm>
 #include <numeric>
 
+#include "core/Skeleton.hpp"
+
 namespace ms {
+
+namespace {
+
+// The model-space global matrix of the bone a layer is bound to, or a null
+// optional when the layer is unbound or the bone cannot be resolved (no
+// skeleton/pose, an unknown name, or a pose that has not been evaluated yet).
+// A resolvable bone replaces the layer's parent chain, so a cutout part
+// follows the posed bone — including any CCD-IK that posed it.
+bool bone_global(const Layer2D& layer, const Skeleton* skeleton,
+                 const Pose* pose, mat4& out) {
+    if (layer.bound_bone.empty() || skeleton == nullptr || pose == nullptr) {
+        return false;
+    }
+    const int index = skeleton->find_bone(layer.bound_bone);
+    if (index < 0 || static_cast<std::size_t>(index) >= pose->global.size()) {
+        return false;
+    }
+    out = pose->global[static_cast<std::size_t>(index)];
+    return true;
+}
+
+}  // namespace
 
 mat4 Layer2D::local_matrix() const {
     // Translate the layer into place, rotate and scale about the origin, then
@@ -59,35 +83,75 @@ const Layer2D* Scene2D::find(LayerId id) const {
     return &layers_[static_cast<std::size_t>(id)];
 }
 
-mat4 Scene2D::world_matrix(LayerId id) const {
+mat4 Scene2D::world_parent_matrix(LayerId id, const Skeleton* skeleton,
+                                  const Pose* pose) const {
     const Layer2D* layer = find(id);
     if (layer == nullptr) {
         return mat4(1.0f);
     }
-    if (layer->parent == kInvalidLayer) {
-        return layer->local_matrix();
+    // A resolvable bone binding replaces the parent chain entirely, so a cutout
+    // part follows the posed (and CCD-IK-solved) bone. The bind offset is a
+    // translation in the bone's own local frame.
+    mat4 bone;
+    if (bone_global(*layer, skeleton, pose, bone)) {
+        return bone * glm::translate(mat4(1.0f), vec3(layer->bind_offset, 0.0f));
     }
-    return world_matrix(layer->parent) * layer->local_matrix();
+    if (layer->parent == kInvalidLayer) {
+        return mat4(1.0f);
+    }
+    return world_matrix(layer->parent, skeleton, pose);
 }
 
-mat4 Scene2D::pivot_world_matrix(LayerId id) const {
+mat4 Scene2D::pivot_parent_matrix(LayerId id, const Skeleton* skeleton,
+                                  const Pose* pose) const {
     const Layer2D* layer = find(id);
     if (layer == nullptr) {
         return mat4(1.0f);
     }
-    if (layer->parent == kInvalidLayer) {
-        return layer->pivot_matrix();
+    mat4 bone;
+    if (bone_global(*layer, skeleton, pose, bone)) {
+        return bone * glm::translate(mat4(1.0f), vec3(layer->bind_offset, 0.0f));
     }
-    return pivot_world_matrix(layer->parent) * layer->pivot_matrix();
+    if (layer->parent == kInvalidLayer) {
+        return mat4(1.0f);
+    }
+    return pivot_world_matrix(layer->parent, skeleton, pose);
 }
 
-vec2 Scene2D::world_pivot(LayerId id) const {
+mat4 Scene2D::world_matrix(LayerId id, const Skeleton* skeleton,
+                           const Pose* pose) const {
+    const Layer2D* layer = find(id);
+    if (layer == nullptr) {
+        return mat4(1.0f);
+    }
+    return world_parent_matrix(id, skeleton, pose) * layer->local_matrix();
+}
+
+mat4 Scene2D::pivot_world_matrix(LayerId id, const Skeleton* skeleton,
+                                 const Pose* pose) const {
+    const Layer2D* layer = find(id);
+    if (layer == nullptr) {
+        return mat4(1.0f);
+    }
+    return pivot_parent_matrix(id, skeleton, pose) * layer->pivot_matrix();
+}
+
+mat4 Scene2D::pivot_base_matrix(LayerId id, const Skeleton* skeleton,
+                                const Pose* pose) const {
+    // pivot_world_matrix() is exactly pivot_base * pivot_matrix(), so this is
+    // the factor the gizmo inverts to recover a local transform from a
+    // manipulated world matrix.
+    return pivot_parent_matrix(id, skeleton, pose);
+}
+
+vec2 Scene2D::world_pivot(LayerId id, const Skeleton* skeleton,
+                          const Pose* pose) const {
     const Layer2D* layer = find(id);
     if (layer == nullptr) {
         return vec2(0.0f);
     }
     // The pivot is a point of the image, so transform it as a point (w = 1).
-    const vec4 p = world_matrix(id) * vec4(layer->pivot, 0.0f, 1.0f);
+    const vec4 p = world_matrix(id, skeleton, pose) * vec4(layer->pivot, 0.0f, 1.0f);
     return vec2(p.x, p.y);
 }
 

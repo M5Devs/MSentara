@@ -5,12 +5,12 @@ open-source animation tool with a Blender-like editing experience, with a
 particular focus on importing and animating **MikuMikuDance (PMX/VMD)**
 assets.
 
-This repository currently contains **Milestones 0–6**: the project skeleton, a
+This repository currently contains **Milestones 0–6B**: the project skeleton, a
 working GPU viewport, the rendering-agnostic core data model, PMX/VMD import
 with skeletal skinning, morphs, append transforms, CCD-IK and rigid-body
 physics (hair/cloth), a native `.msentara` project format, VMD camera tracks,
-offline PNG sequence export, a **2D cutout animation mode**, and cross-platform
-CI.
+offline PNG sequence export, a **2D cutout animation mode** with **bone
+binding, a keyframe easing editor and onion skinning**, and cross-platform CI.
 
 ## Features
 
@@ -46,6 +46,19 @@ CI.
   through keyed `position`/`rotation`/`scale`/`opacity` tracks. The same
   camera-style pan/zoom and the ImGuizmo manipulator work in 2D, and the 2D
   scene serialises into the `.msentara` project.
+- **2D skeletal binding** (`Layer2D::bound_bone`): bind a cutout layer to any
+  bone on the loaded model's rig, with a per-layer offset. A bound layer is
+  driven by that bone's posed (and CCD-IK-solved) global transform instead of
+  its parent chain, so a hand-cutout follows a rigged arm. Bindings are chosen
+  in the Properties panel and saved with the project.
+- **Keyframe easing editor**: shape the cubic-Bezier ease of the active
+  keyframe — presets (Linear, Ease In/Out, Ease In-Out) or drag the two control
+  points on an interactive curve — for a 2D layer channel or a 3D bone key
+  (X/Y/Z translation or rotation), from the Timeline panel.
+- **Onion skinning** (2D): ghosted previous (blue) and next (red/orange)
+  frames drawn behind the current one, with configurable counts and opacity.
+  Ghosts are interactive-only — an offline PNG export always contains the
+  current frame alone.
 - **Offline PNG sequence export**: render a frame range to numbered
   `frame_NNNN.png` files, from **File ▸ Export PNG Sequence…** or the command
   line, optionally from the motion's camera.

@@ -55,6 +55,121 @@ void draw_vec3_row(const char* label, vec3& v, float speed = 0.05f) {
     ImGui::PopID();
 }
 
+// The four canonical easing shapes, as CSS-style cubic Beziers (control points
+// x1, y1, x2, y2). They are what the preset buttons write.
+struct BezierPreset {
+    const char* name;
+    float x1, y1, x2, y2;
+};
+constexpr BezierPreset kEasingPresets[] = {
+    {"Linear", 0.333333f, 0.333333f, 0.666667f, 0.666667f},
+    {"Ease In", 0.42f, 0.0f, 1.0f, 1.0f},
+    {"Ease Out", 0.0f, 0.0f, 0.58f, 1.0f},
+    {"Ease In-Out", 0.42f, 0.0f, 0.58f, 1.0f},
+};
+
+// Draws an interactive cubic-Bezier easing editor for `b` (the curve that eases
+// the span starting at a keyframe). `drag` holds which control point is being
+// dragged between frames. Presets are one click; the two interior control
+// points can also be dragged on the canvas or typed. Works for both 2D and 3D
+// keys, because both store the same Bezier.
+void draw_bezier_editor(const char* id, Bezier& b, int& drag) {
+    ImGui::PushID(id);
+
+    // Preset buttons.
+    for (const BezierPreset& preset : kEasingPresets) {
+        if (ImGui::SmallButton(preset.name)) {
+            b.cp1 = vec2(preset.x1, preset.y1);
+            b.cp2 = vec2(preset.x2, preset.y2);
+        }
+        ImGui::SameLine();
+    }
+    ImGui::NewLine();
+
+    // The curve canvas. A square so the 0..1 domain and range are 1:1, drawn
+    // with y up (so an ease-in-out reads as the usual S shape).
+    const float canvas = 180.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##canvas", ImVec2(canvas, canvas));
+    const bool canvas_hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    const auto to_screen = [&](const vec2& p) {
+        return ImVec2(origin.x + p.x * canvas, origin.y + (1.0f - p.y) * canvas);
+    };
+    const auto to_curve = [&](const ImVec2& p) {
+        return vec2((p.x - origin.x) / canvas, 1.0f - (p.y - origin.y) / canvas);
+    };
+
+    dl->AddRectFilled(origin,
+                      ImVec2(origin.x + canvas, origin.y + canvas),
+                      IM_COL32(24, 24, 26, 255));
+    dl->AddRect(origin, ImVec2(origin.x + canvas, origin.y + canvas),
+                IM_COL32(70, 70, 74, 255));
+    // Unit box guide (the linear reference is the diagonal).
+    dl->AddLine(to_screen(vec2(0.0f, 0.0f)), to_screen(vec2(1.0f, 1.0f)),
+                IM_COL32(70, 70, 74, 120));
+
+    // The curve itself, sampled because the cubic has no closed form in y(x).
+    constexpr int kSteps = 48;
+    ImVec2 prev = to_screen(vec2(0.0f, 0.0f));
+    for (int i = 1; i <= kSteps; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(kSteps);
+        const ImVec2 cur = to_screen(b.eval(t));
+        dl->AddLine(prev, cur, IM_COL32(240, 200, 90, 255), 2.0f);
+        prev = cur;
+    }
+
+    // Control-point handles. The origin and end are fixed at (0,0)/(1,1), so
+    // only the two interior points are interactive.
+    const vec2 handles[2] = {b.cp1, b.cp2};
+    for (int i = 0; i < 2; ++i) {
+        const ImVec2 hp = to_screen(handles[i]);
+        const ImVec2 anchor = to_screen(i == 0 ? vec2(0.0f, 0.0f) : vec2(1.0f, 1.0f));
+        dl->AddLine(anchor, hp, IM_COL32(120, 120, 130, 200));
+        dl->AddCircleFilled(hp, 6.0f, IM_COL32(120, 200, 255, 255));
+    }
+
+    // Drag a handle: pick the nearer one on mouse-down, then follow the cursor
+    // (clamped to the unit box) until the button is released.
+    if (canvas_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const float d0 = (mouse.x - to_screen(b.cp1).x) * (mouse.x - to_screen(b.cp1).x) +
+                         (mouse.y - to_screen(b.cp1).y) * (mouse.y - to_screen(b.cp1).y);
+        const float d1 = (mouse.x - to_screen(b.cp2).x) * (mouse.x - to_screen(b.cp2).x) +
+                         (mouse.y - to_screen(b.cp2).y) * (mouse.y - to_screen(b.cp2).y);
+        drag = (d0 <= d1) ? 0 : 1;
+    }
+    if (drag >= 0) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const vec2 c = to_curve(ImGui::GetIO().MousePos);
+            const vec2 clamped(glm::clamp(c.x, 0.0f, 1.0f),
+                               glm::clamp(c.y, 0.0f, 1.0f));
+            if (drag == 0) {
+                b.cp1 = clamped;
+            } else {
+                b.cp2 = clamped;
+            }
+        } else {
+            drag = -1;
+        }
+    }
+
+    // Numeric fields, so a curve can be typed exactly (and read off).
+    ImGui::SetNextItemWidth(canvas * 0.5f - 4.0f);
+    ImGui::DragFloat2("##cp1", &b.cp1.x, 0.005f, 0.0f, 1.0f, "%.3f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(canvas * 0.5f - 4.0f);
+    ImGui::DragFloat2("##cp2", &b.cp2.x, 0.005f, 0.0f, 1.0f, "%.3f");
+    ImGui::TextDisabled("Bezier(%.3f, %.3f, %.3f, %.3f)",
+                        static_cast<double>(b.cp1.x),
+                        static_cast<double>(b.cp1.y),
+                        static_cast<double>(b.cp2.x),
+                        static_cast<double>(b.cp2.y));
+
+    ImGui::PopID();
+}
+
 }  // namespace
 
 void Editor::setup() {
@@ -754,6 +869,12 @@ void Editor::draw_timeline_panel() {
     ImGui::SameLine();
     ImGui::Checkbox("Loop", &timeline_.loop);
 
+    // Onion skinning is a 2D-viewport tool, so its controls live here only in
+    // 2D mode. The app reads these settings when it draws the 2D viewport.
+    if (mode_ == EditorMode::TwoD) {
+        draw_onion_skin_controls();
+    }
+
     // When the loaded motion carries a camera track, let the user drive the
     // viewport from it. Disabled (and unchecked) when there is no camera track.
     if (has_vmd_camera()) {
@@ -844,6 +965,13 @@ void Editor::draw_timeline_panel() {
         }
     }
     ImGui::Dummy(ruler_size);
+
+    // Keyframe easing editor for the active keyframe. It works in both modes:
+    // 2D edits the selected layer's channel, 3D the selected bone's key.
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Keyframe Easing")) {
+        draw_easing_editor();
+    }
 
     if (model_ != nullptr && model_->has_animation()) {
         ImGui::TextDisabled("Motion: %zu bone tracks, %zu scalar tracks, "
@@ -1005,6 +1133,8 @@ Project Editor::capture_project(const std::string& model_path,
             out.opacity = layer.opacity;
             out.tint = layer.tint;
             out.visible = layer.visible;
+            out.bound_bone = layer.bound_bone;
+            out.bind_offset = layer.bind_offset;
             project.layers_2d.push_back(std::move(out));
         }
 
@@ -1237,6 +1367,50 @@ void Editor::draw_layer2d_properties() {
     }
 
     ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Skeletal Binding", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // A layer can follow a bone on the loaded model's skeleton (a 3D rig or
+        // a 2D rig). When bound, its transform is driven by that bone, so a
+        // cutout part tracks a posed (and CCD-IK-solved) bone on the Timeline.
+        const bool has_skeleton = model_ != nullptr && model_->valid() &&
+                                  !model_->model().skeleton.empty();
+        if (!has_skeleton) {
+            ImGui::TextDisabled("Load a model to bind layers to bones");
+        } else {
+            const Skeleton& skeleton = model_->model().skeleton;
+            // A combo listing every bone, plus an explicit "(unbound)" entry.
+            const std::string current = layer->bound_bone;
+            const char* preview =
+                current.empty() ? "(unbound)" : current.c_str();
+            ImGui::TextUnformatted("Bone");
+            ImGui::SameLine(90.0f);
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::BeginCombo("##bound_bone", preview)) {
+                if (ImGui::Selectable("(unbound)", current.empty())) {
+                    layer->bound_bone.clear();
+                }
+                for (const Bone& bone : skeleton.bones()) {
+                    const bool selected = (bone.name == current);
+                    if (ImGui::Selectable(bone.name.c_str(), selected)) {
+                        layer->bound_bone = bone.name;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (!layer->bound_bone.empty()) {
+                ImGui::TextUnformatted("Offset");
+                ImGui::SameLine(90.0f);
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::DragFloat2("##bind_offset", &layer->bind_offset.x, 1.0f,
+                                  0.0f, 0.0f, "%.1f");
+                if (ImGui::Button("Unbind")) {
+                    layer->bound_bone.clear();
+                    layer->bind_offset = vec2(0.0f);
+                }
+            }
+        }
+    }
+
+    ImGui::Spacing();
     if (ImGui::CollapsingHeader("2D Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextDisabled("Key at frame %d", current_frame_int());
         if (ImGui::Button("Key Layer")) {
@@ -1258,6 +1432,11 @@ void Editor::draw_layer2d_properties() {
             } else {
                 ImGui::TextDisabled("(no keys for this layer)");
             }
+        }
+
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Keyframe Easing")) {
+            draw_easing_editor();
         }
     }
 
@@ -1286,12 +1465,12 @@ void Editor::draw_layer2d_gizmo(float origin_x, float origin_y, float width,
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(origin_x, origin_y, width, height);
 
-    // The gizmo edits the layer's pivot-origin world matrix (parent pivot chain
-    // * local pivot matrix), so translation reads as position and rotation and
-    // scale act about the pivot.
-    const mat4 parent_pivot = (layer->parent != kInvalidLayer)
-                                  ? scene2d.pivot_world_matrix(layer->parent)
-                                  : mat4(1.0f);
+    // A bone-bound layer is posed by its bone, so it is not directly editable;
+    // the gizmo is drawn at the layer's pivot for reference but its edits are
+    // ignored. An unbound layer uses the pivot-origin world matrix (parent
+    // pivot chain * local pivot matrix).
+    const bool bound = !layer->bound_bone.empty();
+    const mat4 base = scene2d.pivot_base_matrix(id);
     mat4 world = scene2d.pivot_world_matrix(id);
 
     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
@@ -1301,9 +1480,10 @@ void Editor::draw_layer2d_gizmo(float origin_x, float origin_y, float width,
         op = ImGuizmo::SCALE;
     }
 
-    if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op,
-                             ImGuizmo::LOCAL, glm::value_ptr(world))) {
-        const mat4 local = glm::inverse(parent_pivot) * world;
+    if (!bound && ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
+                                       op, ImGuizmo::LOCAL,
+                                       glm::value_ptr(world))) {
+        const mat4 local = glm::inverse(base) * world;
         Layer2D* editable = scene2d.find(id);
         editable->position = vec2(local[3].x, local[3].y);
 
@@ -1358,6 +1538,174 @@ void Editor::delete_key_selected_layer2d() {
         break;
     }
     layers2d_changed_ = true;
+}
+
+// The Bezier that eases the span starting at the active keyframe of the
+// selected 2D layer's active channel, or nullptr when there is no such key.
+// The easing editor writes through the returned pointer, so shaping the curve
+// edits the authored key in place.
+Bezier* Editor::active_easing_curve() {
+    if (scene2d_ == nullptr) {
+        return nullptr;
+    }
+    Layer2D* layer = scene2d_->scene().selected_layer();
+    if (layer == nullptr) {
+        return nullptr;
+    }
+    Layer2DTrack* track = nullptr;
+    for (Layer2DTrack& t : scene2d_->clip().layer_2d_tracks) {
+        if (t.name == layer->name) {
+            track = &t;
+            break;
+        }
+    }
+    if (track == nullptr) {
+        return nullptr;
+    }
+    const int frame = current_frame_int();
+    switch (easing_channel_) {
+        case Easing2DChannel::Position:
+            for (Vec2Key& k : track->position.keys) {
+                if (k.frame == frame) {
+                    return &k.bezier;
+                }
+            }
+            break;
+        case Easing2DChannel::Scale:
+            for (Vec2Key& k : track->scale.keys) {
+                if (k.frame == frame) {
+                    return &k.bezier;
+                }
+            }
+            break;
+        case Easing2DChannel::Rotation:
+            for (FloatKey& k : track->rotation.keys) {
+                if (k.frame == frame) {
+                    return &k.bezier;
+                }
+            }
+            break;
+        case Easing2DChannel::Opacity:
+            for (FloatKey& k : track->opacity.keys) {
+                if (k.frame == frame) {
+                    return &k.bezier;
+                }
+            }
+            break;
+    }
+    return nullptr;
+}
+
+const char* Editor::active_easing_channel_name() const {
+    switch (easing_channel_) {
+        case Easing2DChannel::Position: return "Position";
+        case Easing2DChannel::Scale:    return "Scale";
+        case Easing2DChannel::Rotation: return "Rotation";
+        case Easing2DChannel::Opacity:  return "Opacity";
+    }
+    return "Position";
+}
+
+// The Keyframe Easing widget: preset buttons plus an interactive control-point
+// editor for the curve that eases the active keyframe. In 2D it edits the
+// selected layer's active channel; in 3D it edits the selected bone's active
+// keyframe curve (X/Y/Z translation or rotation).
+void Editor::draw_easing_editor() {
+    if (mode_ == EditorMode::TwoD) {
+        if (scene2d_ == nullptr) {
+            ImGui::TextDisabled("No 2D scene");
+            return;
+        }
+        const char* channels[] = {"Position", "Scale", "Rotation", "Opacity"};
+        int channel = static_cast<int>(easing_channel_);
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::Combo("##easing_channel", &channel, channels,
+                         IM_ARRAYSIZE(channels))) {
+            easing_channel_ = static_cast<Easing2DChannel>(channel);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("at frame %d", current_frame_int());
+
+        Bezier* curve = active_easing_curve();
+        if (curve == nullptr) {
+            ImGui::TextDisabled(
+                "No %s key at this frame (key the layer first)",
+                active_easing_channel_name());
+            return;
+        }
+        draw_bezier_editor("easing2d", *curve, easing_drag_handle_);
+        return;
+    }
+
+    // 3D: the active keyframe is the selected bone's key at the current frame.
+    if (model_ == nullptr || !model_->valid() || !model_->has_animation()) {
+        ImGui::TextDisabled("No motion loaded (File > Import VMD)");
+        return;
+    }
+    const int bone = model_->selected_bone();
+    const Skeleton& skeleton = model_->model().skeleton;
+    if (bone < 0 || bone >= static_cast<int>(skeleton.size())) {
+        ImGui::TextDisabled("Select a bone to edit its keyframe easing");
+        return;
+    }
+    const std::string& bone_name = skeleton.bone(bone).name;
+    const BoneTrack* track = model_->clip().find_bone(bone_name);
+    if (track == nullptr) {
+        ImGui::TextDisabled("Bone '%s' has no animation track", bone_name.c_str());
+        return;
+    }
+    const int frame = current_frame_int();
+    BoneKey* key = nullptr;
+    for (BoneKey& k : model_->clip().bone(bone_name).keys) {
+        if (k.frame == frame) {
+            key = &k;
+            break;
+        }
+    }
+    if (key == nullptr) {
+        ImGui::TextDisabled("Bone '%s' has no key at frame %d",
+                            bone_name.c_str(), frame);
+        return;
+    }
+    const char* channels[] = {"Translate X", "Translate Y", "Translate Z",
+                              "Rotation"};
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::Combo("##easing_bone_channel", &easing_bone_channel_, channels,
+                 IM_ARRAYSIZE(channels));
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s @ frame %d", bone_name.c_str(), frame);
+
+    Bezier* curve = nullptr;
+    switch (easing_bone_channel_) {
+        case 0: curve = &key->bezier_x; break;
+        case 1: curve = &key->bezier_y; break;
+        case 2: curve = &key->bezier_z; break;
+        default: curve = &key->bezier_rot; break;
+    }
+    draw_bezier_editor("easing3d", *curve, easing_drag_handle_);
+}
+
+// The Onion Skin toolbar controls (2D only). The app reads these settings when
+// it draws the 2D viewport; they are never applied to an offline export.
+void Editor::draw_onion_skin_controls() {
+    ImGui::SameLine();
+    ImGui::TextUnformatted("|");
+    ImGui::SameLine();
+    ImGui::Checkbox("Onion", &onion_skin_.enabled);
+    if (onion_skin_.enabled) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::DragInt("##onion_prev", &onion_skin_.prev_frames, 0.2f, 0, 20,
+                       "Prev %d");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::DragInt("##onion_next", &onion_skin_.next_frames, 0.2f, 0, 20,
+                       "Next %d");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::DragFloat("##onion_opacity", &onion_skin_.opacity, 0.01f, 0.0f,
+                         1.0f, "Alpha %.2f");
+    }
 }
 
 }  // namespace ms
