@@ -197,3 +197,20 @@ Full detail in `2026-11-17.md` (M6C). Durable facts:
 - **Verify**: 12/12 ctest, `test_2d` 252 checks / 0 fail (107 new), gcc+clang+
   ASan+UBSan clean, `-g0 -j 1`; headless Xvfb+llvmpipe smokes (image+variant+
   export, preset import+variant+export, 3D export).
+
+## Real-asset stress test (Task 15) — loaders verified against real MMD files
+
+Real PMX/VMD assets live ONLY in `/tmp/real_assets/` (gdown; never in repo).
+Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
+16 TGA/BMP/SPA textures) and a second model (2865 verts) × two motions:
+- `ShiftJis.cpp` + generated `SjisTable.hpp` decode CP932 byte-perfectly (all
+  65025 (lead,trail) pairs match Python cp932; 461 real VMD names identical).
+- `resolve_texture_path` handles `\`, leading `\`, `.\`, `..\`, `C:\`, `C:/`,
+  `/abs`, UTF-8 — all correct. All real textures resolve + decode.
+- Bone-name matching is exact-string; a motion from a different rig matches only
+  the shared primary skeleton (Miku×rapappa = 87/461, covering the whole body).
+  NFKC normalization adds nothing — do NOT "fix" this, it is correct.
+- Loaders + physics are referential-integrity clean and fuzz-clean (800
+  truncations + 4000 corruptions under ASan, no crash/OOB/UB). PMX `bone=-1`
+  on a rigid body is the legal "no bone" sentinel (`Physics::build` clamps it).
+- Full load→morph→IK→physics→skin loop is ASan+UBSan clean on real data.
