@@ -16,10 +16,13 @@
 
 #pragma once
 
+#include <string>
+
 #include "core/Camera.hpp"
 #include "core/Scene.hpp"
 #include "core/Timeline.hpp"
 #include "platform/RenderTypes.hpp"
+#include "ui/ModelInstance.hpp"
 
 namespace ms {
 
@@ -39,6 +42,26 @@ public:
     GizmoMode gizmo_mode() const { return gizmo_mode_; }
     void set_gizmo_mode(GizmoMode mode) { gizmo_mode_ = mode; }
 
+    // The editor does not own the model; it only reads and edits its pose.
+    void set_model(ModelInstance* model) { model_ = model; }
+    ModelInstance* model() { return model_; }
+
+    // A load requested from the menu or the path field. The app owns the
+    // renderer, so it performs the actual load and reports back via
+    // set_status().
+    void request_load(const std::string& path) {
+        pending_load_ = path;
+        has_pending_load_ = true;
+    }
+    bool has_pending_load() const { return has_pending_load_; }
+    std::string take_pending_load() {
+        has_pending_load_ = false;
+        return pending_load_;
+    }
+
+    void set_status(const std::string& status) { status_ = status; }
+    const std::string& status() const { return status_; }
+
     // Set by the 3D viewport panel so the app can skip camera navigation while
     // the cursor is over the UI.
     bool viewport_hovered() const { return viewport_hovered_; }
@@ -53,11 +76,17 @@ private:
     void draw_outliner_panel();
     void draw_properties_panel();
     void draw_timeline_panel();
+    void draw_model_tree();
+    void draw_bone_properties();
+    void draw_model_gizmo(float origin_x, float origin_y, float width,
+                          float height);
 
     Scene scene_;
     Camera camera_;
     Timeline timeline_;
     GizmoMode gizmo_mode_ = GizmoMode::Translate;
+
+    ModelInstance* model_ = nullptr;
 
     bool viewport_hovered_ = false;
     bool viewport_focused_ = false;
@@ -65,6 +94,11 @@ private:
     float viewport_y_ = 0.0f;
     float viewport_w_ = 0.0f;
     float viewport_h_ = 0.0f;
+
+    std::string pending_load_;
+    bool has_pending_load_ = false;
+    std::string status_;
+    char path_buffer_[512] = {};
 
     bool show_demo_ = false;
     bool layout_initialised_ = false;

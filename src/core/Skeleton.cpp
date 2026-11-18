@@ -34,7 +34,8 @@ std::vector<int> resolve_order(const std::vector<Bone>& bones) {
     const int count = static_cast<int>(bones.size());
     std::vector<int> order;
     order.reserve(static_cast<std::size_t>(count));
-    std::vector<char> state(static_cast<std::size_t>(count), 0);  // 0 new, 2 done
+    // 0 = unvisited, 1 = on the stack (in progress), 2 = emitted.
+    std::vector<char> state(static_cast<std::size_t>(count), 0);
 
     std::vector<int> stack;
     for (int i = 0; i < count; ++i) {
@@ -42,16 +43,17 @@ std::vector<int> resolve_order(const std::vector<Bone>& bones) {
             continue;
         }
         stack.push_back(i);
+        state[static_cast<std::size_t>(i)] = 1;
         while (!stack.empty()) {
             const int current = stack.back();
-            if (state[static_cast<std::size_t>(current)] == 2) {
-                stack.pop_back();
-                continue;
-            }
             const int parent = bones[static_cast<std::size_t>(current)].parent;
+            // Descend into a parent that has not been seen yet. A parent that
+            // is already on the stack means the chain is cyclic; emitting the
+            // current bone breaks the cycle instead of recursing forever.
             if (parent >= 0 && parent < count &&
                 state[static_cast<std::size_t>(parent)] == 0) {
                 stack.push_back(parent);
+                state[static_cast<std::size_t>(parent)] = 1;
                 continue;
             }
             state[static_cast<std::size_t>(current)] = 2;

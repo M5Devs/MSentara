@@ -17,8 +17,10 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "core/Math.hpp"
+#include "core/Material.hpp"
 #include "core/Mesh.hpp"
 #include "platform/RenderTypes.hpp"
 
@@ -57,11 +59,49 @@ public:
     void draw_lines(const GpuMesh& mesh, const mat4& model,
                     const mat4& view_proj);
 
+    // --- Textures ---------------------------------------------------------
+    // Uploads decoded RGBA8 pixels. Returns an invalid handle on empty input.
+    GpuTexture create_texture(const TextureData& texture);
+    void destroy_texture(GpuTexture& texture);
+
+    // The shared 1x1 white texture, created lazily. Materials without their
+    // own texture sample this so the shader never needs a branch.
+    const GpuTexture& white_texture();
+
+    // --- Skinned (per-frame dynamic) geometry ------------------------------
+    // A model's index buffer is uploaded once; its vertices are re-uploaded
+    // every frame from the CPU skinning pass.
+    GpuIndexBuffer create_index_buffer(const std::vector<std::uint32_t>& indices);
+    void destroy_index_buffer(GpuIndexBuffer& buffer);
+
+    GpuDynamicMesh create_dynamic_mesh(int vertex_capacity);
+    void destroy_dynamic_mesh(GpuDynamicMesh& mesh);
+
+    // Writes `vertices` into the dynamic buffer for the current frame, growing
+    // the buffer if needed. Must be called outside a pass, once per frame,
+    // before any draw_skinned call that uses the buffer.
+    bool upload_vertices(GpuDynamicMesh& mesh, const std::vector<Vertex>& vertices);
+
+    // Draws one material range with cel shading and an optional texture. Must
+    // be called inside a pass, after upload_vertices for this frame.
+    void draw_skinned(const GpuDynamicMesh& vertices,
+                      const GpuIndexBuffer& indices,
+                      std::uint32_t index_offset, std::uint32_t index_count,
+                      const GpuTexture& texture, const vec4& diffuse,
+                      const mat4& model, const mat4& view_proj,
+                      bool double_sided);
+
 private:
     bool setup_ = false;
     std::uint32_t shader_ = 0;  // sg_shader id
     GpuPipeline triangle_pipeline_;
     GpuPipeline line_pipeline_;
+
+    std::uint32_t skinned_shader_ = 0;
+    GpuPipeline skinned_pipeline_;
+    GpuPipeline skinned_pipeline_double_;
+
+    GpuTexture white_texture_;
 };
 
 }  // namespace ms

@@ -18,6 +18,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <vector>
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -147,6 +149,19 @@ void Editor::draw_main_menu_bar() {
         ImGui::MenuItem("Open…", "Ctrl+O", false, false);
         ImGui::MenuItem("Save", "Ctrl+S", false, false);
         ImGui::Separator();
+        // A minimal import affordance: type or paste a path and press Load.
+        // A native file dialog is a later milestone.
+        ImGui::TextUnformatted("Import PMX");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool submitted = ImGui::InputText(
+            "##pmx_path", path_buffer_, sizeof(path_buffer_),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Load") || submitted) {
+            if (path_buffer_[0] != '\0') {
+                request_load(path_buffer_);
+            }
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
             sapp_request_quit();
         }
@@ -172,6 +187,44 @@ void Editor::draw_main_menu_bar() {
     ImGui::EndMainMenuBar();
 }
 
+// ImGuizmo driven by a bone's model-space global matrix. The gizmo edits a
+// world matrix (the model transform composed with the bone's global), and the
+// edit is converted back into the rig's local delta.
+void Editor::draw_model_gizmo(float origin_x, float origin_y, float width,
+                              float height) {
+    if (model_ == nullptr || !model_->valid()) {
+        return;
+    }
+    const int bone = model_->selected_bone();
+    if (bone < 0 || bone >= static_cast<int>(model_->model().skeleton.size())) {
+        return;
+    }
+
+    const float aspect = (height > 0.0f) ? width / height : 1.0f;
+    mat4 view = camera_.view_matrix();
+    mat4 proj = camera_.projection_matrix(aspect);
+
+    ImGuizmo::SetOrthographic(camera_.orthographic);
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(origin_x, origin_y, width, height);
+
+    const mat4 model_matrix = model_->model_matrix();
+    mat4 world =
+        model_matrix * model_->pose().global[static_cast<std::size_t>(bone)];
+
+    ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+    if (gizmo_mode_ == GizmoMode::Rotate) {
+        op = ImGuizmo::ROTATE;
+    } else if (gizmo_mode_ == GizmoMode::Scale) {
+        op = ImGuizmo::SCALE;
+    }
+
+    if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op,
+                             ImGuizmo::LOCAL, glm::value_ptr(world))) {
+        model_->set_bone_global(bone, glm::inverse(model_matrix) * world);
+    }
+}
+
 void Editor::draw_viewport_panel(const RenderTarget& viewport) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     const bool open = ImGui::Begin(kViewportWindow);
@@ -195,30 +248,36 @@ void Editor::draw_viewport_panel(const RenderTarget& viewport) {
             ImGui::Dummy(avail);
         }
 
-        // Overlay the gizmo on the selected entity, using the exact same
-        // view/projection matrices the renderer used.
-        Entity* selected = scene_.selected_entity();
-        if (selected != nullptr && selected->type != EntityType::Camera) {
-            const float aspect = (avail.y > 0.0f) ? avail.x / avail.y : 1.0f;
-            mat4 view = camera_.view_matrix();
-            mat4 proj = camera_.projection_matrix(aspect);
+        // The loaded model takes over the gizmo: its selected bone is posed,
+        // and the scene entities' gizmo is only used when no model is present.
+        if (model_ != nullptr && model_->valid() &&
+            model_->selected_bone() >= 0) {
+            draw_model_gizmo(origin.x, origin.y, avail.x, avail.y);
+        } else {
+            Entity* selected = scene_.selected_entity();
+            if (selected != nullptr && selected->type != EntityType::Camera) {
+                const float aspect =
+                    (avail.y > 0.0f) ? avail.x / avail.y : 1.0f;
+                mat4 view = camera_.view_matrix();
+                mat4 proj = camera_.projection_matrix(aspect);
 
-            ImGuizmo::SetOrthographic(camera_.orthographic);
-            ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-            ImGuizmo::SetRect(origin.x, origin.y, avail.x, avail.y);
+                ImGuizmo::SetOrthographic(camera_.orthographic);
+                ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+                ImGuizmo::SetRect(origin.x, origin.y, avail.x, avail.y);
 
-            mat4 model = selected->transform.matrix();
-            ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
-            if (gizmo_mode_ == GizmoMode::Rotate) {
-                op = ImGuizmo::ROTATE;
-            } else if (gizmo_mode_ == GizmoMode::Scale) {
-                op = ImGuizmo::SCALE;
-            }
+                mat4 model = selected->transform.matrix();
+                ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+                if (gizmo_mode_ == GizmoMode::Rotate) {
+                    op = ImGuizmo::ROTATE;
+                } else if (gizmo_mode_ == GizmoMode::Scale) {
+                    op = ImGuizmo::SCALE;
+                }
 
-            if (ImGuizmo::Manipulate(
-                    glm::value_ptr(view), glm::value_ptr(proj), op,
-                    ImGuizmo::LOCAL, glm::value_ptr(model))) {
-                selected->transform = Transform::from_matrix(model);
+                if (ImGuizmo::Manipulate(
+                        glm::value_ptr(view), glm::value_ptr(proj), op,
+                        ImGuizmo::LOCAL, glm::value_ptr(model))) {
+                    selected->transform = Transform::from_matrix(model);
+                }
             }
         }
     }
@@ -228,6 +287,16 @@ void Editor::draw_viewport_panel(const RenderTarget& viewport) {
 
 void Editor::draw_outliner_panel() {
     ImGui::Begin(kOutlinerWindow);
+
+    if (model_ != nullptr && model_->valid()) {
+        if (ImGui::CollapsingHeader("Model", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextUnformatted(model_->name().c_str());
+            ImGui::Separator();
+            draw_model_tree();
+        }
+        ImGui::Spacing();
+    }
+
     ImGui::TextUnformatted("Scene Collection");
     ImGui::Separator();
 
@@ -253,8 +322,124 @@ void Editor::draw_outliner_panel() {
     ImGui::End();
 }
 
+// Recursively lists the skeleton. Bones are a hierarchy, so the tree is
+// rendered depth-first from the roots; the indentation is what makes the
+// parent/child relationship legible.
+void Editor::draw_model_tree() {
+    if (model_ == nullptr || !model_->valid()) {
+        return;
+    }
+    const Skeleton& skeleton = model_->model().skeleton;
+    if (skeleton.empty()) {
+        ImGui::TextDisabled("(no skeleton)");
+        return;
+    }
+
+    // Children are gathered once so each bone is visited exactly once, which
+    // also tolerates the malformed-rig case of an out-of-range parent.
+    const int count = static_cast<int>(skeleton.size());
+    std::vector<std::vector<int>> children(static_cast<std::size_t>(count));
+    std::vector<int> roots;
+    for (int i = 0; i < count; ++i) {
+        const int parent = skeleton.bone(i).parent;
+        if (parent >= 0 && parent < count) {
+            children[static_cast<std::size_t>(parent)].push_back(i);
+        } else {
+            roots.push_back(i);
+        }
+    }
+
+    std::function<void(int)> visit = [&](int bone) {
+        const Bone& b = skeleton.bone(bone);
+        const bool selected = (model_->selected_bone() == bone);
+
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                   ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (children[static_cast<std::size_t>(bone)].empty()) {
+            flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        }
+        if (selected) {
+            flags |= ImGuiTreeNodeFlags_Selected;
+        }
+
+        ImGui::PushID(bone);
+        const bool open = ImGui::TreeNodeEx(
+            "bone", flags, "%s", b.name.c_str());
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+            model_->select_bone(bone);
+        }
+        if (open && !children[static_cast<std::size_t>(bone)].empty()) {
+            for (int child : children[static_cast<std::size_t>(bone)]) {
+                visit(child);
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    };
+
+    for (int root : roots) {
+        visit(root);
+    }
+}
+
+void Editor::draw_bone_properties() {
+    ModelInstance* m = model_;
+    if (m == nullptr || !m->valid()) {
+        return;
+    }
+    const int bone = m->selected_bone();
+    if (bone < 0 || bone >= static_cast<int>(m->model().skeleton.size())) {
+        return;
+    }
+
+    const Bone& b = m->model().skeleton.bone(bone);
+    ImGui::Text("Bone: %s", b.name.c_str());
+    ImGui::TextDisabled("parent: %s",
+                        b.parent >= 0
+                            ? m->model().skeleton.bone(b.parent).name.c_str()
+                            : "(root)");
+    ImGui::Separator();
+
+    // Editing the pose delta is the authored value: a rotation here pivots
+    // around the bone's own origin, which is what posing intuitively means.
+    Pose& pose = m->pose();
+    if (ImGui::CollapsingHeader("Pose", ImGuiTreeNodeFlags_DefaultOpen)) {
+        Transform& delta = pose.delta[static_cast<std::size_t>(bone)];
+        draw_vec3_row("Location", delta.position);
+        draw_vec3_row("Rotation", delta.rotation, 0.5f);
+        draw_vec3_row("Scale", delta.scale, 0.01f);
+        if (ImGui::Button("Reset Bone Pose")) {
+            delta = Transform{};
+        }
+    }
+
+    // The resulting model-space position, read-only, so the effect of the
+    // pose edit is visible numerically as well as in the viewport.
+    const mat4& global = pose.global[static_cast<std::size_t>(bone)];
+    const vec3 world_position(global[3]);
+    ImGui::Spacing();
+    ImGui::TextDisabled("World position: %.3f, %.3f, %.3f", world_position.x,
+                        world_position.y, world_position.z);
+}
+
 void Editor::draw_properties_panel() {
     ImGui::Begin(kPropertiesWindow);
+
+    // When a model is loaded, its bone takes priority in this panel: that is
+    // the object the gizmo is currently posing.
+    if (model_ != nullptr && model_->valid() && model_->selected_bone() >= 0) {
+        if (ImGui::CollapsingHeader("Model Transform",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+            Transform& t = model_->transform();
+            draw_vec3_row("Location", t.position);
+            draw_vec3_row("Rotation", t.rotation, 0.5f);
+            draw_vec3_row("Scale", t.scale, 0.01f);
+        }
+        ImGui::Spacing();
+        draw_bone_properties();
+        ImGui::End();
+        return;
+    }
 
     Entity* e = scene_.selected_entity();
     if (e == nullptr) {
@@ -393,6 +578,11 @@ void Editor::draw_timeline_panel() {
                     IM_COL32(90, 170, 255, 255), 2.0f);
     }
     ImGui::Dummy(ruler_size);
+
+    if (!status_.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("%s", status_.c_str());
+    }
 
     ImGui::End();
 }

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "core/Mesh.hpp"
 #include "platform/Renderer.hpp"
@@ -27,6 +28,7 @@
 #include "imgui.h"
 #include "ImGuizmo.h"
 #include "ui/Editor.hpp"
+#include "ui/ModelInstance.hpp"
 #include "ui/Theme.hpp"
 #include "util/sokol_imgui.h"
 
@@ -40,10 +42,15 @@ constexpr vec3 kWindowBg{0.17f, 0.17f, 0.17f};
 
 Renderer g_renderer;
 Editor g_editor;
+ModelInstance g_model;
 GpuMesh g_cube;
 GpuMesh g_grid;
 RenderTarget g_viewport;
 int g_frame_count = 0;
+
+// A PMX path supplied on the command line (--pmx <path>). sokol_main runs
+// before the GL context exists, so the load itself is deferred to init_cb.
+std::string g_pmx_path;
 
 // Optional frame limit, used by the headless smoke test to exit on its own.
 // Unset (or 0) means "run until the user quits".
@@ -54,6 +61,32 @@ int g_target_w = 0;
 int g_target_h = 0;
 
 void apply_camera_navigation();
+
+// Loads a model, replacing any previous one, and frames the camera on it.
+void load_model(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    std::string error;
+    if (!g_model.load(path, g_renderer, error)) {
+        g_editor.set_status("Failed to load " + path + ": " + error);
+        std::fprintf(stderr, "MSentara: failed to load '%s': %s\n",
+                     path.c_str(), error.c_str());
+        return;
+    }
+
+    // Frame the camera on the model so it is visible immediately regardless
+    // of the units the model was authored in.
+    const Bounds bounds = compute_bounds(g_model.model().mesh);
+    if (bounds.valid()) {
+        g_editor.camera().frame(bounds.center, bounds.radius);
+    }
+    g_editor.set_status("Loaded " + path);
+    std::printf("MSentara: loaded '%s' (%zu vertices, %zu bones, %zu materials)\n",
+                path.c_str(), g_model.model().mesh.vertices.size(),
+                g_model.model().skeleton.size(),
+                g_model.model().materials.size());
+}
 
 void init_cb() {
     g_renderer.setup();
@@ -70,12 +103,25 @@ void init_cb() {
 
     apply_blender_dark_theme();
     g_editor.setup();
+    g_editor.set_model(&g_model);
 
     g_cube = g_renderer.create_mesh(make_unit_cube());
     g_grid = g_renderer.create_mesh(make_grid(10, 1.0f));
 
     if (const char* limit = std::getenv("MSENTARA_FRAME_LIMIT")) {
         g_frame_limit = std::atoi(limit);
+    }
+
+    // Environment variable as well as the flag, so the smoke test can drive a
+    // load without touching argv.
+    std::string pmx = g_pmx_path;
+    if (pmx.empty()) {
+        if (const char* env = std::getenv("MSENTARA_PMX")) {
+            pmx = env;
+        }
+    }
+    if (!pmx.empty()) {
+        load_model(pmx);
     }
 }
 
@@ -106,6 +152,15 @@ void frame_cb() {
     apply_camera_navigation();
     g_editor.timeline().advance(static_cast<float>(sapp_frame_duration()));
 
+    // A load requested from the UI is performed here: this runs outside any
+    // pass, which is where buffer/image creation and transient writes belong.
+    if (g_editor.has_pending_load()) {
+        load_model(g_editor.take_pending_load());
+    }
+
+    // Re-evaluate the pose and re-upload the skinned vertices for this frame.
+    g_model.update(g_renderer);
+
     // 1) Render the 3D scene into the offscreen target.
     if (g_viewport.valid()) {
         const float aspect =
@@ -124,6 +179,11 @@ void frame_cb() {
             }
             const mat4 model = g_editor.scene().world_matrix(e.id);
             g_renderer.draw_triangles(g_cube, model, view_proj);
+        }
+
+        // The loaded model, skinned and drawn per material.
+        if (g_model.valid()) {
+            g_model.draw(g_renderer, view_proj);
         }
         g_renderer.end_pass();
     }
@@ -149,6 +209,7 @@ void frame_cb() {
 }
 
 void cleanup_cb() {
+    g_model.clear(g_renderer);
     g_renderer.destroy_mesh(g_cube);
     g_renderer.destroy_mesh(g_grid);
     g_renderer.destroy_render_target(g_viewport);
@@ -243,8 +304,17 @@ void event_cb(const sapp_event* ev) {
 }  // namespace
 
 sapp_desc sokol_main(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
+    // Parse --pmx <path> here: argv is only available before the window
+    // exists, and the actual load waits for the GL context in init_cb.
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if ((arg == "--pmx" || arg == "-p") && i + 1 < argc) {
+            g_pmx_path = argv[++i];
+        } else if (arg.rfind("--pmx=", 0) == 0) {
+            g_pmx_path = arg.substr(6);
+        }
+    }
+
     sapp_desc desc = {};
     desc.init_cb = init_cb;
     desc.frame_cb = frame_cb;

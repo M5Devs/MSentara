@@ -177,16 +177,22 @@ void build_model(PmxBuilder& b, bool utf16) {
         b.u8(weight_type);
     };
 
-    // V0: fully the child bone, so a rotation of that bone moves it.
-    vertex(vec3(1.0f, 1.0f, 0.0f), vec2(0.0f, 0.0f), 0 /* BDEF1 */);
-    b.i8(1);  // bone 1
-    b.f32(1.0f);
+    // Each vertex ends with its own edge-scale float, immediately after the
+    // weights. PMX BDEF1 has no weight (the single bone is implicitly 1.0);
+    // BDEF2 carries a one-byte weight in [0, 100]; BDEF4 carries four floats.
 
-    // V1: BDEF2, 25% root / 75% child.
+    // V0: BDEF1, fully the child bone, so a rotation of that bone moves it.
+    vertex(vec3(1.0f, 1.0f, 0.0f), vec2(0.0f, 0.0f), 0 /* BDEF1 */);
+    b.i8(1);     // bone 1
+    b.f32(1.0f); // edge scale
+
+    // V1: BDEF2, 25% root / 75% child. Weight byte 25 encodes 0.25 for the
+    // first bone; the second bone takes the remainder.
     vertex(vec3(1.0f, 1.0f, 0.0f), vec2(1.0f, 0.0f), 1 /* BDEF2 */);
     b.i8(0);
     b.i8(1);
-    b.f32(0.25f);
+    b.i8(25);
+    b.f32(1.0f);  // edge scale
 
     // V2: BDEF4 with an unused (nil) slot.
     vertex(vec3(0.0f, 2.0f, 0.0f), vec2(0.0f, 1.0f), 2 /* BDEF4 */);
@@ -198,16 +204,13 @@ void build_model(PmxBuilder& b, bool utf16) {
     b.f32(0.5f);
     b.f32(0.0f);
     b.f32(0.0f);
+    b.f32(1.0f);  // edge scale
 
-    // V3: fully the root bone, and off the Z axis to pin the handedness flip.
+    // V3: BDEF1, fully the root bone, and off the Z axis to pin the
+    // handedness flip.
     vertex(vec3(1.0f, 0.0f, 3.0f), vec2(1.0f, 1.0f), 0 /* BDEF1 */);
     b.i8(0);
-    b.f32(1.0f);
-
-    // Edge scale, one per vertex (not stored by the parser, but consumed).
-    for (int i = 0; i < 4; ++i) {
-        b.f32(1.0f);
-    }
+    b.f32(1.0f);  // edge scale
 
     // --- Surfaces: two triangles ---
     b.i32(6);
@@ -417,11 +420,12 @@ void test_skin_pose_math() {
     // V1 is 25% root / 75% child, so it lands between the two extremes.
     MS_CHECK_NEAR(posed.vertices[1].position, vec3(0.25f, 1.75f, 0.0f));
 
-    // Rotating a bone is a rigid motion, so lengths are preserved.
-    const float before = glm::length(model.mesh.vertices[0].position -
-                                     model.mesh.vertices[3].position);
-    const float after =
-        glm::length(posed.vertices[0].position - posed.vertices[3].position);
+    // Rotating a bone is a rigid motion about the bone's own origin, so a
+    // vertex fully weighted to that bone keeps its distance from the origin.
+    // (Comparing two vertices that ride *different* bones would not be rigid.)
+    const vec3 pivot(pose.global[1][3]);
+    const float before = glm::length(model.mesh.vertices[0].position - pivot);
+    const float after = glm::length(posed.vertices[0].position - pivot);
     MS_CHECK(ms::test::nearly(before, after, 1e-3f));
 }
 

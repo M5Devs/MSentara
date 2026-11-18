@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstddef>
 
+#include "platform/ImageIO.hpp"
 #include "platform/SokolConfig.hpp"
 #include "sokol_app.h"
 #include "sokol_gfx.h"
@@ -164,6 +165,162 @@ sg_view make_texture_view(std::uint32_t image_id) {
     return sg_make_view(&desc);
 }
 
+// --- Skinned mesh shading --------------------------------------------------
+//
+// A separate shader from the unskinned one because it adds a UV attribute and
+// samples a texture. The lighting is deliberately simple "cel" shading: a
+// single headlight quantised into a few flat bands, which reads as an
+// anime/MMD look without needing real toon ramps.
+
+constexpr int kAttrUv = 3;
+
+struct SkinnedParams {
+    float mvp[16];
+    float model[16];
+    float diffuse[4];
+};
+
+const char* const kSkinnedVertexShader = R"(
+#version 410
+
+uniform mat4 mvp;
+uniform mat4 model;
+
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 color;
+layout(location = 3) in vec2 uv;
+
+layout(location = 0) out vec3 v_normal;
+layout(location = 1) out vec2 v_uv;
+layout(location = 2) out vec3 v_color;
+
+void main() {
+    gl_Position = mvp * vec4(position, 1.0);
+    v_normal = normalize(mat3(model) * normal);
+    v_uv = uv;
+    v_color = color;
+}
+)";
+
+const char* const kSkinnedFragmentShader = R"(
+#version 410
+
+uniform vec4 diffuse;
+uniform sampler2D tex;
+
+layout(location = 0) in vec3 v_normal;
+layout(location = 1) in vec2 v_uv;
+layout(location = 2) in vec3 v_color;
+
+layout(location = 0) out vec4 frag_color;
+
+void main() {
+    vec3 n = normalize(v_normal);
+    float lambert = max(dot(n, normalize(vec3(0.4, 0.8, 0.6))), 0.0);
+
+    // Quantise the diffuse term into three flat bands plus a dim ambient
+    // floor, which is what gives the model its cel-shaded look.
+    float band = lambert < 0.33 ? 0.45 : (lambert < 0.66 ? 0.72 : 1.0);
+
+    vec4 texel = texture(tex, v_uv);
+    vec3 albedo = diffuse.rgb * texel.rgb * v_color;
+    frag_color = vec4(albedo * band, diffuse.a * texel.a);
+}
+)";
+
+sg_shader_desc make_skinned_shader_desc() {
+    sg_shader_desc desc = {};
+    desc.vertex_func.source = kSkinnedVertexShader;
+    desc.vertex_func.entry = "main";
+    desc.fragment_func.source = kSkinnedFragmentShader;
+    desc.fragment_func.entry = "main";
+
+    desc.attrs[kAttrPosition].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrNormal].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrColor].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    desc.attrs[kAttrUv].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+
+    desc.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    desc.uniform_blocks[0].size = sizeof(SkinnedParams);
+    desc.uniform_blocks[0].layout = SG_UNIFORMLAYOUT_NATIVE;
+    desc.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
+    desc.uniform_blocks[0].glsl_uniforms[0].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "mvp";
+    desc.uniform_blocks[0].glsl_uniforms[1].type = SG_UNIFORMTYPE_MAT4;
+    desc.uniform_blocks[0].glsl_uniforms[1].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[1].glsl_name = "model";
+    desc.uniform_blocks[0].glsl_uniforms[2].type = SG_UNIFORMTYPE_FLOAT4;
+    desc.uniform_blocks[0].glsl_uniforms[2].array_count = 1;
+    desc.uniform_blocks[0].glsl_uniforms[2].glsl_name = "diffuse";
+
+    // One combined texture+sampler binding. GL 4.1 and WebGL2 cannot bind by
+    // name, so both the view and the sampler need their stage declared, and
+    // the pair needs the GLSL name of the sampler uniform.
+    desc.views[0].texture.stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.views[0].texture.image_type = SG_IMAGETYPE_2D;
+    desc.views[0].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+    desc.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
+    desc.texture_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    desc.texture_sampler_pairs[0].view_slot = 0;
+    desc.texture_sampler_pairs[0].sampler_slot = 0;
+    desc.texture_sampler_pairs[0].glsl_name = "tex";
+    return desc;
+}
+
+sg_pipeline make_skinned_pipeline(sg_shader shader, bool double_sided) {
+    sg_pipeline_desc desc = {};
+    desc.shader = shader;
+    desc.layout.buffers[0].stride = sizeof(Vertex);
+    desc.layout.attrs[kAttrPosition].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrPosition].offset = offsetof(Vertex, position);
+    desc.layout.attrs[kAttrNormal].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrNormal].offset = offsetof(Vertex, normal);
+    desc.layout.attrs[kAttrColor].format = SG_VERTEXFORMAT_FLOAT3;
+    desc.layout.attrs[kAttrColor].offset = offsetof(Vertex, color);
+    desc.layout.attrs[kAttrUv].format = SG_VERTEXFORMAT_FLOAT2;
+    desc.layout.attrs[kAttrUv].offset = offsetof(Vertex, uv);
+
+    desc.primitive_type = SG_PRIMITIVETYPE_TRIANGLES;
+    desc.index_type = SG_INDEXTYPE_UINT32;
+    // PMX materials can opt out of back-face culling, and the loader maps that
+    // flag onto Material::double_sided.
+    desc.cull_mode = double_sided ? SG_CULLMODE_NONE : SG_CULLMODE_BACK;
+    desc.face_winding = SG_FACEWINDING_CCW;
+    desc.depth.pixel_format = SG_PIXELFORMAT_DEPTH;
+    desc.depth.compare = SG_COMPAREFUNC_LESS_EQUAL;
+    desc.depth.write_enabled = true;
+    desc.sample_count = 1;
+    desc.label = double_sided ? "ms-skinned-double" : "ms-skinned";
+    return sg_make_pipeline(&desc);
+}
+
+void submit_skinned_matrices(const mat4& mvp, const mat4& model,
+                             const vec4& diffuse) {
+    SkinnedParams params{};
+    std::copy_n(glm::value_ptr(mvp), 16, params.mvp);
+    std::copy_n(glm::value_ptr(model), 16, params.model);
+    params.diffuse[0] = diffuse.r;
+    params.diffuse[1] = diffuse.g;
+    params.diffuse[2] = diffuse.b;
+    params.diffuse[3] = diffuse.a;
+    const sg_range range = SG_RANGE(params);
+    sg_apply_uniforms(0, &range);
+}
+
+sg_sampler make_linear_sampler() {
+    sg_sampler_desc desc = {};
+    desc.min_filter = SG_FILTER_LINEAR;
+    desc.mag_filter = SG_FILTER_LINEAR;
+    // Clamp: PMX UVs are in [0,1] and wrapping would bleed the opposite edge
+    // on the seam of a texture atlas.
+    desc.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
+    desc.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+    desc.label = "ms-sampler";
+    return sg_make_sampler(&desc);
+}
+
 }  // namespace
 
 void Renderer::setup() {
@@ -183,6 +340,13 @@ void Renderer::setup() {
     line_pipeline_.id =
         make_pipeline(sg_shader{shader_}, SG_PRIMITIVETYPE_LINES, true).id;
 
+    sg_shader_desc skinned_desc = make_skinned_shader_desc();
+    skinned_shader_ = sg_make_shader(&skinned_desc).id;
+    skinned_pipeline_.id =
+        make_skinned_pipeline(sg_shader{skinned_shader_}, false).id;
+    skinned_pipeline_double_.id =
+        make_skinned_pipeline(sg_shader{skinned_shader_}, true).id;
+
     setup_ = true;
 }
 
@@ -190,14 +354,24 @@ void Renderer::shutdown() {
     if (!setup_) {
         return;
     }
+    destroy_texture(white_texture_);
     if (triangle_pipeline_.valid()) {
         sg_destroy_pipeline(sg_pipeline{triangle_pipeline_.id});
     }
     if (line_pipeline_.valid()) {
         sg_destroy_pipeline(sg_pipeline{line_pipeline_.id});
     }
+    if (skinned_pipeline_.valid()) {
+        sg_destroy_pipeline(sg_pipeline{skinned_pipeline_.id});
+    }
+    if (skinned_pipeline_double_.valid()) {
+        sg_destroy_pipeline(sg_pipeline{skinned_pipeline_double_.id});
+    }
     if (shader_ != 0) {
         sg_destroy_shader(sg_shader{shader_});
+    }
+    if (skinned_shader_ != 0) {
+        sg_destroy_shader(sg_shader{skinned_shader_});
     }
     sg_shutdown();
     setup_ = false;
@@ -341,6 +515,158 @@ void Renderer::draw_lines(const GpuMesh& mesh, const mat4& model,
     sg_apply_bindings(&bindings);
     submit_matrices(view_proj * model, model);
     sg_draw(0, mesh.index_count, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Textures
+// ---------------------------------------------------------------------------
+
+GpuTexture Renderer::create_texture(const TextureData& texture) {
+    GpuTexture gpu;
+    if (!texture.valid()) {
+        return gpu;
+    }
+
+    sg_image_desc image_desc = {};
+    image_desc.width = texture.width;
+    image_desc.height = texture.height;
+    image_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
+    image_desc.data =
+        sg_range{texture.pixels.data(), texture.pixels.size()};
+    image_desc.label = "ms-texture";
+    gpu.image = sg_make_image(&image_desc).id;
+
+    gpu.view = make_texture_view(gpu.image).id;
+    gpu.sampler = make_linear_sampler().id;
+    return gpu;
+}
+
+void Renderer::destroy_texture(GpuTexture& texture) {
+    if (texture.view != 0) {
+        sg_destroy_view(sg_view{texture.view});
+    }
+    if (texture.sampler != 0) {
+        sg_destroy_sampler(sg_sampler{texture.sampler});
+    }
+    if (texture.image != 0) {
+        sg_destroy_image(sg_image{texture.image});
+    }
+    texture = GpuTexture{};
+}
+
+const GpuTexture& Renderer::white_texture() {
+    if (!white_texture_.valid()) {
+        white_texture_ = create_texture(make_white_texture());
+    }
+    return white_texture_;
+}
+
+// ---------------------------------------------------------------------------
+// Skinned geometry
+// ---------------------------------------------------------------------------
+
+GpuIndexBuffer Renderer::create_index_buffer(
+    const std::vector<std::uint32_t>& indices) {
+    GpuIndexBuffer gpu;
+    if (indices.empty()) {
+        return gpu;
+    }
+    sg_buffer_desc desc = {};
+    desc.usage.index_buffer = true;
+    desc.data =
+        sg_range{indices.data(), indices.size() * sizeof(std::uint32_t)};
+    desc.label = "ms-model-ibuf";
+    gpu.ibuf = sg_make_buffer(&desc).id;
+    gpu.index_count = static_cast<int>(indices.size());
+    return gpu;
+}
+
+void Renderer::destroy_index_buffer(GpuIndexBuffer& buffer) {
+    if (buffer.ibuf != 0) {
+        sg_destroy_buffer(sg_buffer{buffer.ibuf});
+    }
+    buffer = GpuIndexBuffer{};
+}
+
+GpuDynamicMesh Renderer::create_dynamic_mesh(int vertex_capacity) {
+    GpuDynamicMesh gpu;
+    vertex_capacity = std::max(vertex_capacity, 1);
+
+    sg_buffer_desc desc = {};
+    // write_transient marks this as a per-frame scratch buffer; it may only be
+    // written and drawn within the same frame.
+    desc.usage.vertex_buffer = true;
+    desc.usage.write_transient = true;
+    desc.size = static_cast<std::size_t>(vertex_capacity) * sizeof(Vertex);
+    desc.label = "ms-skin-vbuf";
+    gpu.vbuf = sg_make_buffer(&desc).id;
+    gpu.vertex_capacity = vertex_capacity;
+    return gpu;
+}
+
+void Renderer::destroy_dynamic_mesh(GpuDynamicMesh& mesh) {
+    if (mesh.vbuf != 0) {
+        sg_destroy_buffer(sg_buffer{mesh.vbuf});
+    }
+    mesh = GpuDynamicMesh{};
+}
+
+bool Renderer::upload_vertices(GpuDynamicMesh& mesh,
+                               const std::vector<Vertex>& vertices) {
+    if (vertices.empty()) {
+        return false;
+    }
+
+    // A transient buffer has a fixed size, so growing the model means
+    // recreating it. Destroy-then-create is safe outside a pass, which is
+    // where this is always called from.
+    const int needed = static_cast<int>(vertices.size());
+    if (needed > mesh.vertex_capacity) {
+        destroy_dynamic_mesh(mesh);
+        mesh = create_dynamic_mesh(needed);
+        if (!mesh.valid()) {
+            return false;
+        }
+    }
+
+    sg_write_buffer_desc desc = {};
+    desc.src.data = sg_range{vertices.data(),
+                             vertices.size() * sizeof(Vertex)};
+    desc.dst.buffer = sg_buffer{mesh.vbuf};
+    sg_write_buffer_transient(&desc);
+    return true;
+}
+
+void Renderer::draw_skinned(const GpuDynamicMesh& vertices,
+                            const GpuIndexBuffer& indices,
+                            std::uint32_t index_offset,
+                            std::uint32_t index_count,
+                            const GpuTexture& texture, const vec4& diffuse,
+                            const mat4& model, const mat4& view_proj,
+                            bool double_sided) {
+    if (!vertices.valid() || !indices.valid() || index_count == 0) {
+        return;
+    }
+    const GpuPipeline& pipeline =
+        double_sided ? skinned_pipeline_double_ : skinned_pipeline_;
+    if (!pipeline.valid()) {
+        return;
+    }
+
+    sg_apply_pipeline(sg_pipeline{pipeline.id});
+
+    sg_bindings bindings = {};
+    bindings.vertex_buffers[0] = sg_buffer{vertices.vbuf};
+    bindings.index_buffer = sg_buffer{indices.ibuf};
+    // An untextured material samples the shared white texture so the shader
+    // needs no branch.
+    const GpuTexture& bound = texture.valid() ? texture : white_texture();
+    bindings.views[0] = sg_view{bound.view};
+    bindings.samplers[0] = sg_sampler{bound.sampler};
+    sg_apply_bindings(&bindings);
+
+    submit_skinned_matrices(view_proj * model, model, diffuse);
+    sg_draw(static_cast<int>(index_offset), static_cast<int>(index_count), 1);
 }
 
 }  // namespace ms

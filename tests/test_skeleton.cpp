@@ -149,8 +149,10 @@ void test_deep_hierarchy_and_cycles() {
     Skeleton deep;
     int parent = -1;
     for (int i = 0; i < 2000; ++i) {
+        // add_bone takes a model-space position, so each bone steps one unit
+        // further along Y than its parent.
         parent = deep.add_bone("b" + std::to_string(i), parent,
-                               vec3(0.0f, 1.0f, 0.0f));
+                               vec3(0.0f, static_cast<float>(i + 1), 0.0f));
     }
     deep.compute_rest();
     MS_CHECK(deep.size() == 2000u);

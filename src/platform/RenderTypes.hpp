@@ -55,4 +55,31 @@ struct RenderTarget {
     bool valid() const { return color_image != 0 && texture_view != 0; }
 };
 
+// An uploaded texture: the image, the view the shader samples through, and
+// the sampler that describes filtering/wrapping. The three are separate
+// objects in this sokol revision.
+struct GpuTexture {
+    std::uint32_t image = 0;
+    std::uint32_t view = 0;
+    std::uint32_t sampler = 0;
+
+    bool valid() const { return image != 0 && view != 0 && sampler != 0; }
+};
+
+// A vertex buffer that is rewritten every frame with CPU-skinned geometry.
+// Created with the transient usage flag, so it must be written and drawn
+// within the same frame.
+struct GpuDynamicMesh {
+    std::uint32_t vbuf = 0;
+    int vertex_capacity = 0;  // in vertices; the buffer is grown as needed
+    bool valid() const { return vbuf != 0; }
+};
+
+// A static index buffer, uploaded once for a loaded model.
+struct GpuIndexBuffer {
+    std::uint32_t ibuf = 0;
+    int index_count = 0;
+    bool valid() const { return ibuf != 0; }
+};
+
 }  // namespace ms

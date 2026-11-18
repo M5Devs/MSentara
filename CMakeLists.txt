@@ -80,6 +80,7 @@ msentara_set_warnings(msentara_formats)
 # Platform: sokol window, input and graphics wrapper.
 # ---------------------------------------------------------------------------
 add_library(msentara_platform STATIC
+    src/platform/ImageIO.cpp
     src/platform/Renderer.cpp
     src/platform/SokolImpl.cpp
 )
@@ -88,6 +89,9 @@ target_include_directories(msentara_platform PUBLIC
     "${SOKOL_INCLUDE_DIR}"
     "${IMGUI_INCLUDE_DIR}"
 )
+# stb_image is an implementation detail of the platform layer, so it stays
+# PRIVATE.
+target_include_directories(msentara_platform PRIVATE "${STB_INCLUDE_DIR}")
 target_compile_definitions(msentara_platform PUBLIC
     MSENTARA_SAMPLE_COUNT=${MSENTARA_SAMPLE_COUNT}
 )
@@ -104,6 +108,7 @@ msentara_set_warnings(msentara_platform)
 # ---------------------------------------------------------------------------
 add_library(msentara_ui STATIC
     src/ui/Editor.cpp
+    src/ui/ModelInstance.cpp
     src/ui/Theme.cpp
 )
 target_include_directories(msentara_ui PUBLIC
@@ -111,7 +116,7 @@ target_include_directories(msentara_ui PUBLIC
     "${IMGUI_INCLUDE_DIR}"
     "${IMGUIZMO_INCLUDE_DIR}"
 )
-target_link_libraries(msentara_ui PUBLIC msentara_platform)
+target_link_libraries(msentara_ui PUBLIC msentara_platform msentara_formats)
 msentara_set_warnings(msentara_ui)
 
 # ---------------------------------------------------------------------------
