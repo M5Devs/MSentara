@@ -168,7 +168,7 @@ void build_model(PmxBuilder& b, bool utf16) {
     text("");               // universal comment
 
     // --- Vertices ---
-    b.i32(4);
+    b.i32(5);
     const auto vertex = [&](const vec3& position, const vec2& uv,
                             std::uint8_t weight_type) {
         b.vec3f(position);
@@ -179,19 +179,18 @@ void build_model(PmxBuilder& b, bool utf16) {
 
     // Each vertex ends with its own edge-scale float, immediately after the
     // weights. PMX BDEF1 has no weight (the single bone is implicitly 1.0);
-    // BDEF2 carries a one-byte weight in [0, 100]; BDEF4 carries four floats.
+    // BDEF2/SDEF carry a 4-byte float weight; BDEF4 carries four floats.
 
     // V0: BDEF1, fully the child bone, so a rotation of that bone moves it.
     vertex(vec3(1.0f, 1.0f, 0.0f), vec2(0.0f, 0.0f), 0 /* BDEF1 */);
     b.i8(1);     // bone 1
     b.f32(1.0f); // edge scale
 
-    // V1: BDEF2, 25% root / 75% child. Weight byte 25 encodes 0.25 for the
-    // first bone; the second bone takes the remainder.
+    // V1: BDEF2, 25% root / 75% child. The weight is a 4-byte IEEE-754 float.
     vertex(vec3(1.0f, 1.0f, 0.0f), vec2(1.0f, 0.0f), 1 /* BDEF2 */);
     b.i8(0);
     b.i8(1);
-    b.i8(25);
+    b.f32(0.25f);
     b.f32(1.0f);  // edge scale
 
     // V2: BDEF4 with an unused (nil) slot.
@@ -210,6 +209,18 @@ void build_model(PmxBuilder& b, bool utf16) {
     // handedness flip.
     vertex(vec3(1.0f, 0.0f, 3.0f), vec2(1.0f, 1.0f), 0 /* BDEF1 */);
     b.i8(0);
+    b.f32(1.0f);  // edge scale
+
+    // V4: SDEF, 50/50. After the shared BDEF2 fields it carries the three
+    // spherical-blend vec3s C, R0, R1 (36 bytes). The parser reads them to
+    // stay aligned; only the weights affect skinning here.
+    vertex(vec3(2.0f, 1.0f, 0.0f), vec2(0.5f, 0.5f), 3 /* SDEF */);
+    b.i8(0);
+    b.i8(1);
+    b.f32(0.5f);
+    b.vec3f(vec3(0.0f, 1.0f, 0.0f));   // C
+    b.vec3f(vec3(1.0f, 0.0f, 0.0f));   // R0
+    b.vec3f(vec3(0.0f, 1.0f, 0.0f));   // R1
     b.f32(1.0f);  // edge scale
 
     // --- Surfaces: two triangles ---
@@ -280,7 +291,7 @@ void test_header_and_vertices() {
     const Model& model = result.model;
     // Universal name is present, so it wins over the local one.
     MS_CHECK(model.name == "Test Model");
-    MS_CHECK(model.mesh.vertices.size() == 4);
+    MS_CHECK(model.mesh.vertices.size() == 5);
     MS_CHECK(model.mesh.indices.size() == 6);
 
     // Position and UV survive the round trip; Z is mirrored to right-handed.
@@ -318,7 +329,7 @@ void test_weights() {
     MS_CHECK_NEAR(mesh.vertices[0].bone_weights[0], 1.0f);
     MS_CHECK_NEAR(mesh.vertices[0].total_weight(), 1.0f);
 
-    // BDEF2: the second weight is the complement of the first.
+    // BDEF2: the weight is a 4-byte float; the second is its complement.
     MS_CHECK(mesh.vertices[1].bone_indices[0] == 0u);
     MS_CHECK(mesh.vertices[1].bone_indices[1] == 1u);
     MS_CHECK_NEAR(mesh.vertices[1].bone_weights[0], 0.25f);
@@ -333,6 +344,14 @@ void test_weights() {
     MS_CHECK_NEAR(mesh.vertices[2].bone_weights[2], 0.0f);
     MS_CHECK_NEAR(mesh.vertices[2].bone_weights[3], 0.0f);
     MS_CHECK_NEAR(mesh.vertices[2].total_weight(), 1.0f);
+
+    // SDEF: the two weights match BDEF2, and the trailing C/R0/R1 vec3s must
+    // have been consumed without desynchronising the following vertex's data.
+    MS_CHECK(mesh.vertices[4].bone_indices[0] == 0u);
+    MS_CHECK(mesh.vertices[4].bone_indices[1] == 1u);
+    MS_CHECK_NEAR(mesh.vertices[4].bone_weights[0], 0.5f);
+    MS_CHECK_NEAR(mesh.vertices[4].bone_weights[1], 0.5f);
+    MS_CHECK_NEAR(mesh.vertices[4].total_weight(), 1.0f);
 }
 
 void test_materials_and_textures() {

@@ -467,14 +467,14 @@ bool read_vertices(Reader& r, const Globals& globals, MeshData& mesh) {
             case kWeightSdef: {
                 std::int32_t first = -1;
                 std::int32_t second = -1;
-                std::uint8_t weight_byte = 0;
+                float weight = 0.0f;
                 if (!r.index(index_size, true, first) ||
-                    !r.index(index_size, true, second) || !r.u8(weight_byte)) {
+                    !r.index(index_size, true, second) || !r.f32(weight)) {
                     return false;
                 }
-                // PMX stores the weight of the first bone as a single byte in
-                // [0, 100]; the second bone takes the remainder.
-                const float weight = static_cast<float>(weight_byte) / 100.0f;
+                // PMX stores the first bone's weight as a 4-byte IEEE-754
+                // float (unlike the older PMD format's [0,100] byte); the
+                // second bone takes the remainder.
                 if (first >= 0 && weight > 0.0f) {
                     vertex.set_influence(0, static_cast<std::uint32_t>(first),
                                          weight);
@@ -483,11 +483,18 @@ bool read_vertices(Reader& r, const Globals& globals, MeshData& mesh) {
                     vertex.set_influence(1, static_cast<std::uint32_t>(second),
                                          1.0f - weight);
                 }
-                // SDEF carries the sphere parameters C/R0/R1, which only matter
-                // to a dedicated SDEF evaluator. The two BDEF2 weights above are
-                // the standard fallback, so the payload is read and discarded.
-                if (weight_type == kWeightSdef && !r.skip(36u)) {
-                    return false;
+                // SDEF adds the spherical-blend parameters C, R0 and R1, three
+                // vec3s (36 bytes) that only matter to a dedicated SDEF
+                // evaluator. They are read here to advance the stream exactly;
+                // the BDEF2 weights above are the skinning fallback.
+                if (weight_type == kWeightSdef) {
+                    vec3 sdef_c;
+                    vec3 sdef_r0;
+                    vec3 sdef_r1;
+                    if (!r.vec3f(sdef_c) || !r.vec3f(sdef_r0) ||
+                        !r.vec3f(sdef_r1)) {
+                        return false;
+                    }
                 }
                 break;
             }

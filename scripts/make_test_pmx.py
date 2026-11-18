@@ -69,8 +69,17 @@ def build():
         b.v3(float(x), float(y), float(z))
         b.v3(0.0, 1.0, 0.0)
         b.v2(0.0, 0.0)
-        b.u8(0)          # BDEF1
-        b.i8(0 if i < 4 else 1)   # front four -> bone 0, back four -> bone 1
+        if i < 4:
+            # Front four: BDEF1, rigidly on bone 0.
+            b.u8(0)      # BDEF1
+            b.i8(0)      # bone 0
+        else:
+            # Back four: BDEF2, 50/50 across both bones. The weight is a
+            # 4-byte IEEE-754 float (PMX), not a [0,100] byte (PMD).
+            b.u8(1)      # BDEF2
+            b.i8(0)      # bone 0
+            b.i8(1)      # bone 1
+            b.f32(0.5)   # bone 0 weight
         b.f32(1.0)       # edge scale
 
     # --- Surfaces: 12 triangles (36 indices).

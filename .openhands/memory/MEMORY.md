@@ -87,13 +87,15 @@ code is included as SYSTEM so its warnings do not count.
 - **`src/formats/PmxLoader.cpp`**: bounds-checked PMX 2.0/2.1 reader
   (`Reader` with `u8/i8/u16/i16/u32/i32/f32/vec*/text/index/skip/count`).
   Text is length-prefixed UTF-16LE or UTF-8 per the global flag.
-- **PMX vertex weight types** (the layout trap that cost a full debug cycle):
-  `0=BDEF1` (one index, implicit weight 1.0), `1=BDEF2` (two indices +
-  **one-byte** weight in `[0,100]`, second bone gets `1 - w/100`),
-  `2=BDEF4` (four indices + **four float** weights), `3=SDEF` (BDEF2 form
-  plus 36 bytes of C/R0/R1 sphere params), `4=QDEF` (BDEF4 form). Each vertex
-  then carries its **own edge-scale float** immediately after the weights —
-  it is per-vertex, not a trailing array.
+- **PMX vertex weight types** (verified against the felixjones spec and
+  benikabocha/saba `PMXFile.cpp` — see `docs/REFERENCES.md`): `0=BDEF1` (one
+  index, implicit weight 1.0), `1=BDEF2` (two indices + **4-byte IEEE-754
+  float** weight; second bone gets `1 - w`), `2=BDEF4` (four indices + four
+  float weights), `3=SDEF` (BDEF2 form plus three `vec3` C/R0/R1 = 36 bytes),
+  `4=QDEF` (BDEF4 form). The `[0,100]` **byte** weight is the older **PMD**
+  format, NOT PMX — using it desynchronises the whole vertex section. Each
+  vertex then carries its **own edge-scale float** immediately after its
+  weights (per-vertex, not a trailing array).
 - **Handedness**: MMD is left-handed Y-up Z-forward; mirroring Z
   (`vec3(x, y, -z)`) converts to GL/GLM right-handed AND flips triangle
   winding, which is exactly what CCW pipelines want, so indices are used
