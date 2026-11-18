@@ -23,6 +23,9 @@
 #include <vector>
 
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
 #include "core/Animation.hpp"
 #include "core/Mesh.hpp"
@@ -290,6 +293,28 @@ struct ExportSession {
 ExportSession g_export;
 std::vector<std::uint8_t> g_export_pixels;
 
+// Creates `dir` if it does not already exist. POSIX mkdir takes a mode; the
+// MSVC one (a direct.h shim over _mkdir) takes only the path. Returns true when
+// the directory exists afterwards.
+bool ensure_directory(const std::string& dir) {
+#if defined(_WIN32)
+    if (::_mkdir(dir.c_str()) != 0) {
+        struct _stat st;
+        if (::_stat(dir.c_str(), &st) != 0 || (st.st_mode & _S_IFDIR) == 0) {
+            return false;
+        }
+    }
+#else
+    if (::mkdir(dir.c_str(), 0755) != 0) {
+        struct stat st;
+        if (::stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
 void start_export(const ExportRequest& request) {
     g_export = ExportSession{};
     g_export.request = request;
@@ -304,14 +329,10 @@ void start_export(const ExportRequest& request) {
         return;
     }
     // Create the output directory if it does not exist yet.
-    if (::mkdir(request.directory.c_str(), 0755) != 0) {
-        struct stat st;
-        if (::stat(request.directory.c_str(), &st) != 0 ||
-            !S_ISDIR(st.st_mode)) {
-            g_export.finished = true;
-            g_export.message = "Export: cannot create " + request.directory;
-            return;
-        }
+    if (!ensure_directory(request.directory)) {
+        g_export.finished = true;
+        g_export.message = "Export: cannot create " + request.directory;
+        return;
     }
     g_export.frame = std::min(request.frame_start, request.frame_end);
     // An explicit size overrides the viewport panel; otherwise the export uses
