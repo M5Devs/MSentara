@@ -56,6 +56,9 @@ json camera_to_json(const ProjectCamera& camera) {
     out["distance"] = camera.distance;
     out["yaw"] = camera.yaw;
     out["pitch"] = camera.pitch;
+    out["roll"] = camera.roll;
+    out["fov_y"] = camera.fov_y;
+    out["orthographic"] = camera.orthographic;
     return out;
 }
 
@@ -69,6 +72,9 @@ ProjectCamera camera_from_json(const json& value, const ProjectCamera& fallback)
     camera.distance = value.value("distance", camera.distance);
     camera.yaw = value.value("yaw", camera.yaw);
     camera.pitch = value.value("pitch", camera.pitch);
+    camera.roll = value.value("roll", camera.roll);
+    camera.fov_y = value.value("fov_y", camera.fov_y);
+    camera.orthographic = value.value("orthographic", camera.orthographic);
     return camera;
 }
 
@@ -95,6 +101,7 @@ std::string project_to_json(const Project& project) {
     out["camera"] = camera_to_json(project.camera);
     out["ik_enabled"] = project.ik_enabled;
     out["physics_enabled"] = project.physics_enabled;
+    out["use_vmd_camera"] = project.use_vmd_camera;
 
     json morphs = json::array();
     for (const ProjectMorphWeight& morph : project.morphs) {
@@ -168,6 +175,8 @@ bool project_from_json(const std::string& text, Project& project,
     // keeps those files loading unchanged.
     project.physics_enabled =
         in.value("physics_enabled", project.physics_enabled);
+    project.use_vmd_camera =
+        in.value("use_vmd_camera", project.use_vmd_camera);
 
     if (in.contains("morphs") && in["morphs"].is_array()) {
         for (const json& entry : in["morphs"]) {

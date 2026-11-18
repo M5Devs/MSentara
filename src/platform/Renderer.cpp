@@ -22,6 +22,34 @@
 
 #include "platform/ImageIO.hpp"
 #include "platform/SokolConfig.hpp"
+
+// The offscreen readback uses a few core-profile GL entry points. sokol_gfx.h
+// only pulls in the platform GL headers inside its SOKOL_IMPL section, so this
+// declaration-only translation unit has to include them itself (the same way
+// sokol does) or the GL symbols below are undeclared.
+#if !defined(__EMSCRIPTEN__)
+    #if defined(_WIN32)
+        #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+        #endif
+        #include <windows.h>
+        #include <GL/gl.h>
+    #elif defined(__APPLE__)
+        #ifndef GL_SILENCE_DEPRECATION
+        #define GL_SILENCE_DEPRECATION
+        #endif
+        #include <OpenGL/gl3.h>
+    #else
+        #define GL_GLEXT_PROTOTYPES
+        #include <GL/gl.h>
+    #endif
+    // GL 1.x headers do not carry the FBO attachment enum; glReadBuffer and
+    // glReadPixels themselves are core 1.x, so only the constant is missing.
+    #ifndef GL_COLOR_ATTACHMENT0
+    #define GL_COLOR_ATTACHMENT0 0x8CE0
+    #endif
+#endif
+
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_glue.h"
@@ -527,6 +555,48 @@ void Renderer::begin_swapchain_pass(const vec3& clear_color) {
 }
 
 void Renderer::end_pass() { sg_end_pass(); }
+
+bool Renderer::read_color_pixels(const RenderTarget& rt,
+                                 std::vector<std::uint8_t>& out) {
+    if (!rt.valid() || rt.width <= 0 || rt.height <= 0) {
+        return false;
+    }
+#if defined(__EMSCRIPTEN__)
+    // WebGL2 has no synchronous pixel readback; the offline exporter is a
+    // desktop-only feature (the web build hides the menu entry).
+    (void)out;
+    return false;
+#else
+    // GL_GLEXT_PROTOTYPES is defined by sokol_gfx.h for the GL backends, so the
+    // GL 3.2 core readback entry points are declared. Reading from the
+    // currently bound framebuffer works on both Linux (glReadBuffer is core)
+    // and macOS (where glReadPixels reads the bound read buffer by default).
+    const std::size_t row_bytes =
+        static_cast<std::size_t>(rt.width) * 4u;
+    out.assign(row_bytes * static_cast<std::size_t>(rt.height), 0u);
+
+    GLint prev_read = 0;
+    glGetIntegerv(GL_READ_BUFFER, &prev_read);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    // Read bottom-up, then flip in memory: glReadPixels always returns the
+    // first row from the bottom, while PNG rows run top-down.
+    glReadPixels(0, 0, rt.width, rt.height, GL_RGBA, GL_UNSIGNED_BYTE,
+                 out.data());
+    glReadBuffer(static_cast<GLenum>(prev_read));
+
+    std::vector<std::uint8_t> row(row_bytes);
+    for (int y = 0; y < rt.height / 2; ++y) {
+        std::uint8_t* top = out.data() + static_cast<std::size_t>(y) * row_bytes;
+        std::uint8_t* bottom =
+            out.data() + static_cast<std::size_t>(rt.height - 1 - y) * row_bytes;
+        std::copy(top, top + row_bytes, row.data());
+        std::copy(bottom, bottom + row_bytes, top);
+        std::copy(row.data(), row.data() + row_bytes, bottom);
+    }
+    return true;
+#endif
+}
 
 void Renderer::draw_triangles(const GpuMesh& mesh, const mat4& model,
                               const mat4& view_proj) {

@@ -42,4 +42,11 @@ TextureData make_white_texture();
 std::string resolve_texture_path(const std::string& model_dir,
                                  const std::string& texture_path);
 
+// Writes tightly packed RGBA8 pixels to a PNG file. `pixels` must hold
+// width * height * 4 bytes, with the first row being the *top* row (the same
+// orientation a decoded image has). Returns false if the file cannot be
+// written. Used by the offline frame-sequence exporter.
+bool write_png_rgba(const std::string& path, int width, int height,
+                    const std::uint8_t* pixels);
+
 }  // namespace ms

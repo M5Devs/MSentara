@@ -30,6 +30,18 @@ namespace ms {
 // Which manipulator the gizmo is currently showing.
 enum class GizmoMode { Translate, Rotate, Scale };
 
+// An offline frame-sequence export request: render frames [frame_start,
+// frame_end] (inclusive) into `directory` as PNG files. The app performs the
+// render because it owns the renderer; the editor only records the request.
+struct ExportRequest {
+    std::string directory;
+    int frame_start = 1;
+    int frame_end = 1;
+    int width = 0;   // 0 means "use the current viewport size"
+    int height = 0;
+    float fps = 30.0f;
+};
+
 // Owns the editor's non-graphics state (selection, gizmo mode, panel sizes)
 // and draws the whole docking UI for one frame.
 class Editor {
@@ -42,6 +54,13 @@ public:
     Timeline& timeline() { return timeline_; }
     GizmoMode gizmo_mode() const { return gizmo_mode_; }
     void set_gizmo_mode(GizmoMode mode) { gizmo_mode_ = mode; }
+
+    // When true, the loaded motion's camera track drives the viewport camera
+    // during playback and export. Off by default so a motion does not silently
+    // take over the viewpoint; the timeline panel exposes it as a checkbox.
+    bool use_vmd_camera() const { return use_vmd_camera_; }
+    void set_use_vmd_camera(bool use) { use_vmd_camera_ = use; }
+    bool has_vmd_camera() const;
 
     // The editor does not own the model; it only reads and edits its pose.
     void set_model(ModelInstance* model) { model_ = model; }
@@ -96,6 +115,19 @@ public:
         return pending_project_save_;
     }
 
+    // An offline frame-sequence export requested from the File menu. The app
+    // owns the renderer, so it runs the export loop and reports the result via
+    // set_status().
+    void request_export(const ExportRequest& request) {
+        pending_export_ = request;
+        has_pending_export_ = true;
+    }
+    bool has_pending_export() const { return has_pending_export_; }
+    ExportRequest take_pending_export() {
+        has_pending_export_ = false;
+        return pending_export_;
+    }
+
     // Gathers the current editor state into a serialisable project, recording
     // the given model/motion paths (the editor does not know them). Only
     // non-default morph weights and bone poses are written, so the file stays
@@ -140,6 +172,7 @@ private:
     void draw_properties_panel();
     void draw_morphs_panel();
     void draw_timeline_panel();
+    void draw_export_modal();
     void draw_model_tree();
     void draw_bone_properties();
     void draw_model_gizmo(float origin_x, float origin_y, float width,
@@ -167,12 +200,19 @@ private:
     bool has_pending_project_open_ = false;
     std::string pending_project_save_;
     bool has_pending_project_save_ = false;
+    ExportRequest pending_export_;
+    bool has_pending_export_ = false;
     bool timeline_changed_ = false;
     bool physics_reset_requested_ = false;
+    bool use_vmd_camera_ = false;
     std::string status_;
     char path_buffer_[512] = {};
     char vmd_path_buffer_[512] = {};
     char project_path_buffer_[512] = {};
+    char export_dir_buffer_[512] = {};
+    int export_start_ = 0;
+    int export_end_ = 0;
+    bool export_modal_open_ = false;
 
     bool show_demo_ = false;
     bool layout_initialised_ = false;

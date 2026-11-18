@@ -47,6 +47,9 @@ struct ProjectCamera {
     float distance = 8.0f;
     float yaw = -35.0f;
     float pitch = 25.0f;
+    float roll = 0.0f;  // degrees; non-zero after a VMD camera keyframe
+    float fov_y = 45.0f;
+    bool orthographic = false;
 };
 
 // A manual morph weight override, keyed by the morph's name so it survives a
@@ -83,6 +86,8 @@ struct Project {
 
     bool ik_enabled = true;
     bool physics_enabled = true;
+    // Whether the loaded motion's camera track drives the viewport camera.
+    bool use_vmd_camera = false;
 
     std::vector<ProjectMorphWeight> morphs;
     std::vector<ProjectBonePose> bones;

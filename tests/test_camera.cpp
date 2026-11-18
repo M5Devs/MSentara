@@ -160,6 +160,74 @@ void test_view_projection_is_well_formed() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// VMD look-at state round-tripping
+// ---------------------------------------------------------------------------
+
+void test_vmd_state_round_trips_orbit() {
+    Camera cam;
+    cam.target = vec3(1.0f, 2.0f, 3.0f);
+    cam.yaw = 40.0f;
+    cam.pitch = -15.0f;
+    cam.roll = 0.0f;
+    cam.distance = 12.0f;
+    cam.fov_y = 42.0f;
+    cam.orthographic = false;
+
+    const CameraState state = cam.vmd_state();
+    Camera restored;
+    restored.apply_vmd_state(state);
+
+    MS_CHECK_NEAR(restored.target, cam.target);
+    MS_CHECK(nearly(restored.yaw, cam.yaw, 1e-3f));
+    MS_CHECK(nearly(restored.pitch, cam.pitch, 1e-3f));
+    MS_CHECK(nearly(restored.distance, cam.distance, 1e-3f));
+    MS_CHECK(nearly(restored.fov_y, cam.fov_y, 1e-3f));
+    MS_CHECK(restored.orthographic == cam.orthographic);
+}
+
+void test_vmd_state_yaw_pitch_roll_mapping() {
+    // VMD orientation is Ry(y) * Rz(-z) * Rx(x): yaw = y, pitch = -x, roll = -z.
+    CameraState state;
+    state.rotate = vec3(glm::radians(10.0f), glm::radians(20.0f),
+                        glm::radians(30.0f));
+    Camera cam;
+    cam.apply_vmd_state(state);
+    MS_CHECK(nearly(cam.yaw, 20.0f, 1e-3f));
+    MS_CHECK(nearly(cam.pitch, -10.0f, 1e-3f));
+    MS_CHECK(nearly(cam.roll, -30.0f, 1e-3f));
+}
+
+void test_vmd_state_interest_and_projection() {
+    CameraState state;
+    state.interest = vec3(4.0f, 5.0f, 6.0f);
+    state.distance = 25.0f;
+    state.fov = 35.0f;
+    state.perspective = false;
+    Camera cam;
+    cam.apply_vmd_state(state);
+    MS_CHECK_NEAR(cam.target, vec3(4.0f, 5.0f, 6.0f));
+    MS_CHECK(nearly(cam.distance, 25.0f, 1e-3f));
+    MS_CHECK(nearly(cam.fov_y, 35.0f, 1e-3f));
+    MS_CHECK(cam.orthographic);
+}
+
+void test_roll_tilts_the_basis() {
+    Camera cam;
+    cam.yaw = 0.0f;
+    cam.pitch = 0.0f;
+    cam.roll = 0.0f;
+    const vec3 up_before = cam.up();
+    const vec3 right_before = cam.right();
+    const vec3 forward_before = cam.forward();
+    cam.roll = 90.0f;
+    // A 90-degree roll swaps the up and right axes (up to sign).
+    MS_CHECK(nearly(glm::dot(cam.up(), up_before), 0.0f, 1e-3f));
+    MS_CHECK(nearly(glm::dot(cam.right(), right_before), 0.0f, 1e-3f));
+    // Rolling must not change where the camera looks.
+    MS_CHECK_NEAR(cam.forward(), forward_before);
+}
+
 }  // namespace
 
 int main() {
@@ -175,5 +243,9 @@ int main() {
     test_view_presets();
     test_projection_matrices();
     test_view_projection_is_well_formed();
+    test_vmd_state_round_trips_orbit();
+    test_vmd_state_yaw_pitch_roll_mapping();
+    test_vmd_state_interest_and_projection();
+    test_roll_tilts_the_basis();
     return ms::test::summary("camera");
 }

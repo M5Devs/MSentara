@@ -120,6 +120,33 @@ void write_bone_key(VmdBuilder& b, const std::vector<std::uint8_t>& name,
     b.interpolation(x0, y0, x1, y1);
 }
 
+// The camera key's 24-byte interpolation block: six sequential 4-byte curves
+// (X, Y, Z, rotation, distance, FOV), each stored as (x0, x1, y0, y1). This is
+// deliberately a different layout from the bone block's interleaved bytes, so
+// a regression that reuses the bone reader would fail these tests.
+void write_camera_key(VmdBuilder& b, std::uint32_t frame, float distance,
+                      float ix, float iy, float iz, float rx, float ry,
+                      float rz, std::uint32_t angle_deg,
+                      std::uint8_t perspective,
+                      const std::uint8_t interp[24] = nullptr) {
+    b.u32(frame);
+    b.f32(distance);
+    b.vec3(ix, iy, iz);
+    b.vec3(rx, ry, rz);
+    if (interp != nullptr) {
+        for (int i = 0; i < 24; ++i) {
+            b.u8(interp[i]);
+        }
+    } else {
+        for (int i = 0; i < 24; ++i) {
+            // 20/107/20/107 is the neutral (linear-ish) MMD default.
+            b.u8((i % 4 == 0 || i % 4 == 2) ? 20 : 107);
+        }
+    }
+    b.u32(angle_deg);
+    b.u8(perspective);
+}
+
 // ---------------------------------------------------------------------------
 // Shift-JIS decoding
 // ---------------------------------------------------------------------------
@@ -360,6 +387,155 @@ void test_morph_keyframes_become_scalar_tracks() {
 }
 
 // ---------------------------------------------------------------------------
+// Camera keyframes
+// ---------------------------------------------------------------------------
+
+void test_camera_section_parsed() {
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);  // no bone keyframes
+    b.u32(0);  // no morph keyframes
+    b.u32(2);  // two camera keyframes
+    // frame 0: interest (1, 2, 3), distance 40, fov 30, perspective.
+    write_camera_key(b, 0, 40.0f, 1.0f, 2.0f, 3.0f, 0.0f, 0.0f, 0.0f, 30, 0);
+    // frame 30: interest (0, 10, 0), distance 55, fov 45, orthographic.
+    write_camera_key(b, 30, 55.0f, 0.0f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 45, 1);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+    MS_CHECK(r.clip.camera_track.keys.size() == 2);
+
+    const CameraKey& k0 = r.clip.camera_track.keys[0];
+    MS_CHECK(k0.frame == 0);
+    MS_CHECK(nearly(k0.state.distance, 40.0f, 1e-3f));
+    // The interest point is mirrored on Z (MMD left-handed -> right-handed).
+    MS_CHECK_NEAR(k0.state.interest, vec3(1.0f, 2.0f, -3.0f));
+    MS_CHECK(nearly(k0.state.fov, 30.0f, 1e-3f));
+    MS_CHECK(k0.state.perspective);
+
+    const CameraKey& k1 = r.clip.camera_track.keys[1];
+    MS_CHECK(k1.frame == 30);
+    MS_CHECK(nearly(k1.state.distance, 55.0f, 1e-3f));
+    MS_CHECK(nearly(k1.state.fov, 45.0f, 1e-3f));
+    MS_CHECK(!k1.state.perspective);
+}
+
+void test_camera_interpolation_is_sequential_layout() {
+    // The X curve is the first 4 bytes, the Y curve the next 4, and so on.
+    // Setting them to different patterns proves the reader does not reuse the
+    // bone block's interleaved (control * 4 + channel) layout.
+    std::uint8_t interp[24] = {};
+    // X: (x0=0, x1=127, y0=0, y1=127) -> linear.
+    interp[0] = 0;   interp[1] = 127; interp[2] = 0;   interp[3] = 127;
+    // Y: (x0=127, x1=0, y0=127, y1=0) -> reversed control points.
+    interp[4] = 127; interp[5] = 0;   interp[6] = 127; interp[7] = 0;
+
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);
+    b.u32(0);
+    b.u32(1);
+    write_camera_key(b, 0, 40.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30, 0,
+                     interp);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+    MS_CHECK(r.clip.camera_track.keys.size() == 1);
+    const CameraKey& k = r.clip.camera_track.keys[0];
+
+    // The X curve came out linear: (0,0) and (1,1).
+    MS_CHECK_NEAR(k.bezier_x.cp1, vec2(0.0f, 0.0f));
+    MS_CHECK_NEAR(k.bezier_x.cp2, vec2(1.0f, 1.0f));
+    MS_CHECK(nearly(k.bezier_x.ease(0.5f), 0.5f, 1e-3f));
+    // The Y curve got the reversed control points: (1,1) and (0,0).
+    MS_CHECK_NEAR(k.bezier_y.cp1, vec2(1.0f, 1.0f));
+    MS_CHECK_NEAR(k.bezier_y.cp2, vec2(0.0f, 0.0f));
+}
+
+void test_camera_frame_end_includes_camera_keys() {
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);
+    b.u32(0);
+    b.u32(1);
+    write_camera_key(b, 77, 40.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 30, 0);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+    MS_CHECK(r.clip.has_camera());
+    MS_CHECK(r.clip.frame_end() == 77);
+}
+
+void test_camera_track_sampling_midpoint() {
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);
+    b.u32(0);
+    b.u32(2);
+    write_camera_key(b, 0, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 20, 0);
+    write_camera_key(b, 10, 30.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 40, 0);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+    // The default interpolation is a symmetric ease-in-out, so the midpoint is
+    // still the average of the two keys.
+    const CameraState mid = r.clip.camera_track.sample(5.0f);
+    MS_CHECK(nearly(mid.distance, 20.0f, 1e-2f));
+    MS_CHECK(nearly(mid.fov, 30.0f, 1e-2f));
+
+    // Outside the range the nearest key is held.
+    MS_CHECK(nearly(r.clip.camera_track.sample(-5.0f).distance, 10.0f, 1e-3f));
+    MS_CHECK(nearly(r.clip.camera_track.sample(100.0f).distance, 30.0f, 1e-3f));
+}
+
+void test_camera_track_hard_cut_on_adjacent_keys() {
+    // Two keys one frame apart are a camera cut: the earlier key is held across
+    // the span rather than interpolated (this is how MMD marks a switch).
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);
+    b.u32(0);
+    b.u32(2);
+    write_camera_key(b, 0, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 20, 0);
+    write_camera_key(b, 1, 90.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 20, 0);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+    const CameraState cut = r.clip.camera_track.sample(0.5f);
+    MS_CHECK(nearly(cut.distance, 10.0f, 1e-3f));
+}
+
+void test_apply_camera_clip_drives_camera() {
+    VmdBuilder b;
+    write_header(b, "Vocaloid Motion Data 0002", 20, "M");
+    b.u32(0);
+    b.u32(0);
+    b.u32(1);
+    // Rotation is stored in radians in CameraState; use 0 here and pin the
+    // fields that do not depend on the Euler convention.
+    write_camera_key(b, 0, 42.0f, 3.0f, 4.0f, 5.0f, 0.0f, 0.0f, 0.0f, 25, 0);
+
+    const VmdResult r = parse_vmd(b.bytes().data(), b.bytes().size());
+    MS_CHECK(r.ok);
+
+    Camera cam;
+    MS_CHECK(apply_camera_clip(r.clip, 0.0f, cam));
+    MS_CHECK_NEAR(cam.target, vec3(3.0f, 4.0f, -5.0f));
+    MS_CHECK(nearly(cam.distance, 42.0f, 1e-3f));
+    MS_CHECK(nearly(cam.fov_y, 25.0f, 1e-3f));
+    MS_CHECK(!cam.orthographic);
+}
+
+void test_apply_camera_clip_noop_without_camera() {
+    AnimationClip clip;
+    clip.bone("center").keys.push_back(BoneKey{});
+    Camera cam;
+    const float yaw_before = cam.yaw;
+    MS_CHECK(!apply_camera_clip(clip, 0.0f, cam));
+    MS_CHECK(nearly(cam.yaw, yaw_before, 1e-3f));
+}
+
+// ---------------------------------------------------------------------------
 // Sampling and clip application
 // ---------------------------------------------------------------------------
 
@@ -504,6 +680,14 @@ int main() {
     test_coordinate_conversion_rotation_z_unchanged();
 
     test_morph_keyframes_become_scalar_tracks();
+
+    test_camera_section_parsed();
+    test_camera_interpolation_is_sequential_layout();
+    test_camera_frame_end_includes_camera_keys();
+    test_camera_track_sampling_midpoint();
+    test_camera_track_hard_cut_on_adjacent_keys();
+    test_apply_camera_clip_drives_camera();
+    test_apply_camera_clip_noop_without_camera();
 
     test_track_sampling_interpolates_translation();
     test_track_sampling_holds_outside_range();

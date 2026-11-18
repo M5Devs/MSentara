@@ -253,7 +253,79 @@ int AnimationClip::frame_end() const {
     for (const ScalarTrack& t : scalar_tracks) {
         end = std::max(end, t.frame_end());
     }
+    end = std::max(end, camera_track.frame_end());
     return end;
+}
+
+// ---------------------------------------------------------------------------
+// CameraTrack
+// ---------------------------------------------------------------------------
+
+void CameraTrack::sort_keys() {
+    std::sort(keys.begin(), keys.end(),
+              [](const CameraKey& a, const CameraKey& b) {
+                  return a.frame < b.frame;
+              });
+}
+
+int CameraTrack::frame_start() const {
+    return keys.empty() ? 0 : keys.front().frame;
+}
+
+int CameraTrack::frame_end() const {
+    return keys.empty() ? 0 : keys.back().frame;
+}
+
+CameraState CameraTrack::sample(float frame) const {
+    if (keys.empty()) {
+        return CameraState{};
+    }
+    if (frame <= static_cast<float>(keys.front().frame)) {
+        return keys.front().state;
+    }
+    if (frame >= static_cast<float>(keys.back().frame)) {
+        return keys.back().state;
+    }
+
+    // Find the span: k0 is the key at or before `frame`, k1 the next key.
+    const std::size_t right = static_cast<std::size_t>(
+        std::upper_bound(keys.begin(), keys.end(), frame,
+                         [](float f, const CameraKey& k) {
+                             return f < static_cast<float>(k.frame);
+                         }) -
+        keys.begin());
+    const CameraKey& k0 = keys[right - 1];
+    const CameraKey& k1 = keys[right];
+
+    // Two keys one frame apart are a hard cut, not a one-frame interpolation:
+    // this is how MMD marks a camera switch, and the reference implementation
+    // holds the earlier key across that span.
+    if (k1.frame - k0.frame <= 1) {
+        return k0.state;
+    }
+
+    const float span = static_cast<float>(k1.frame - k0.frame);
+    const float time = (frame - static_cast<float>(k0.frame)) / span;
+
+    // Each of the six curves eases independently, exactly as the reference
+    // implementation does.
+    const float ex = k0.bezier_x.ease(time);
+    const float ey = k0.bezier_y.ease(time);
+    const float ez = k0.bezier_z.ease(time);
+    const float erot = k0.bezier_rot.ease(time);
+    const float edist = k0.bezier_distance.ease(time);
+    const float efov = k0.bezier_fov.ease(time);
+
+    CameraState out;
+    out.interest = glm::mix(k0.state.interest, k1.state.interest,
+                            vec3(ex, ey, ez));
+    out.rotate = glm::mix(k0.state.rotate, k1.state.rotate, erot);
+    out.distance = glm::mix(k0.state.distance, k1.state.distance, edist);
+    out.fov = glm::mix(k0.state.fov, k1.state.fov, efov);
+    // The projection mode is discrete; hold the earlier key's, matching how a
+    // step (constant) interpolation behaves.
+    out.perspective = k0.state.perspective;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +365,14 @@ void apply_clip(const Skeleton& skeleton, const AnimationClip& clip,
             break;
         }
     }
+}
+
+bool apply_camera_clip(const AnimationClip& clip, float frame, Camera& camera) {
+    if (clip.camera_track.empty()) {
+        return false;
+    }
+    camera.apply_vmd_state(clip.camera_track.sample(frame));
+    return true;
 }
 
 }  // namespace ms

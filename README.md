@@ -5,13 +5,13 @@ open-source animation tool with a Blender-like editing experience, with a
 particular focus on importing and animating **MikuMikuDance (PMX/VMD)**
 assets.
 
-This repository currently contains **Milestones 0–4B**: the project skeleton, a
+This repository currently contains **Milestones 0–5**: the project skeleton, a
 working GPU viewport, the rendering-agnostic core data model, PMX/VMD import
 with skeletal skinning, morphs, append transforms, CCD-IK and rigid-body
-physics (hair/cloth), a native `.msentara` project format, and cross-platform
-CI.
+physics (hair/cloth), a native `.msentara` project format, VMD camera tracks,
+offline PNG sequence export, and cross-platform CI.
 
-## Features (Milestone 0)
+## Features
 
 - Dark, Blender-themed **docking UI** (Dear ImGui, `docking` branch):
   3D Viewport, Outliner, Properties, and a Timeline / dope-sheet stub.
@@ -35,6 +35,12 @@ CI.
 - A native **`.msentara` project format** (versioned JSON) that saves the
   model/motion paths, timeline, camera and manual morph/bone poses. See
   [`docs/PROJECT_FORMAT.md`](docs/PROJECT_FORMAT.md).
+- **VMD camera tracks**: a motion's camera keyframes drive the viewport camera
+  (with roll, field of view and perspective/orthographic), toggled from the
+  Timeline panel's **VMD Camera** checkbox.
+- **Offline PNG sequence export**: render a frame range to numbered
+  `frame_NNNN.png` files, from **File ▸ Export PNG Sequence…** or the command
+  line, optionally from the motion's camera.
 - **Cross-platform CI** (GitHub Actions): Linux (GCC + Clang), Windows
   (MSVC), and an Emscripten WebGL2 bundle.
 
@@ -74,6 +80,27 @@ the GL context exists):
 
 `MSENTARA_PMX`, `MSENTARA_VMD` and `MSENTARA_PROJECT` environment variables are
 honoured as fallbacks for the corresponding flags.
+
+### Offline PNG sequence export
+
+Render a frame range to numbered PNGs without touching the UI, then quit:
+
+```sh
+./build/MSentara --pmx model.pmx --vmd motion.vmd \
+    --export out --export-start 0 --export-end 120 --export-camera
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--export <dir>` | Output directory (created if missing). Frames are `frame_0000.png`, `frame_0001.png`, … |
+| `--export-start <n>` | First frame (defaults to the timeline start). |
+| `--export-end <n>` | Last frame, inclusive (defaults to the timeline end). |
+| `--export-camera` | Drive the camera from the motion's camera track. |
+
+Every frame in a sequence is written at the same size — the 3D viewport panel's
+size. The same render is available interactively from **File ▸ Export PNG
+Sequence…**. Offline export is desktop-only (WebGL2 has no synchronous
+framebuffer readback).
 
 ### Tests
 

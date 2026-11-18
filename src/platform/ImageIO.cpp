@@ -17,11 +17,17 @@
 #include "platform/ImageIO.hpp"
 
 #include <cstddef>
+#include <cstdint>
 
 // stb_image is a single-header library; exactly one translation unit may
 // define the implementation, and this is it.
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+// stb_image_write shares no state with stb_image, so its implementation can
+// live in the same translation unit without a conflict.
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 namespace ms {
 
@@ -90,6 +96,16 @@ std::string resolve_texture_path(const std::string& model_dir,
         return model_dir + relative;
     }
     return model_dir + "/" + relative;
+}
+
+bool write_png_rgba(const std::string& path, int width, int height,
+                    const std::uint8_t* pixels) {
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        return false;
+    }
+    // stride 0 means "tightly packed", which is what the caller guarantees.
+    // stb writes rows top-down, matching the buffer orientation we pass in.
+    return stbi_write_png(path.c_str(), width, height, 4, pixels, 0) != 0;
 }
 
 }  // namespace ms
