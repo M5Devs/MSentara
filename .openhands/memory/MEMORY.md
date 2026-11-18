@@ -100,6 +100,9 @@ offscreen viewport sample an empty texture while the ImGui UI looked fine.
 - VMD bone keys and camera keys use **different** interpolation-block layouts:
   bone = interleaved `(control*4+channel)`, camera = six sequential
   `(x0,x1,y0,y1)` curves. Never share a reader.
+- MSVC's `<direct.h>` `mkdir` takes **one** argument (it is `_mkdir`) and has no
+  `S_ISDIR`; wrap directory creation in a helper rather than calling `::mkdir`
+  directly, or the Windows CI job fails to compile.
 - `glm::perspective` puts -1 in `m[2][3]`, not `m[3][2]`.
 - ImGuizmo must be included **after** `imgui.h`.
 - Inside the viewport arbitrate input with `ImGuizmo::IsOver()/IsUsing()`, NOT
