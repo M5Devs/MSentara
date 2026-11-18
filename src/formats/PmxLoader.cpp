@@ -1,0 +1,849 @@
+// MSentara — cross-platform 2D/3D animation studio
+// Copyright (C) 2026 The MSentara Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#include "formats/PmxLoader.hpp"
+
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace ms {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// PMX constants
+// ---------------------------------------------------------------------------
+
+// Text encoding ids from the globals header.
+constexpr std::uint8_t kEncodingUtf16Le = 0;
+constexpr std::uint8_t kEncodingUtf8 = 1;
+
+// Vertex weight deform types.
+constexpr std::uint8_t kWeightBdef1 = 0;
+constexpr std::uint8_t kWeightBdef2 = 1;
+constexpr std::uint8_t kWeightBdef4 = 2;
+constexpr std::uint8_t kWeightSdef = 3;
+constexpr std::uint8_t kWeightQdef = 4;
+
+// Material drawing flags.
+constexpr std::uint8_t kMaterialNoCull = 0x01;
+constexpr std::uint8_t kMaterialHasEdge = 0x10;
+
+// Bone flags, spread over two bytes.
+constexpr std::uint16_t kBoneTailIsIndex = 0x0001;
+constexpr std::uint16_t kBoneInheritRotation = 0x0100;
+constexpr std::uint16_t kBoneInheritTranslation = 0x0200;
+constexpr std::uint16_t kBoneFixedAxis = 0x0400;
+constexpr std::uint16_t kBoneLocalAxis = 0x0800;
+constexpr std::uint16_t kBoneExternalParent = 0x2000;
+constexpr std::uint16_t kBoneIk = 0x0020;
+
+// ---------------------------------------------------------------------------
+// Bounds-checked little-endian reader
+//
+// Every read validates that the bytes are present, so a truncated or hostile
+// file yields a clean error instead of reading out of bounds. Multi-byte
+// values are assembled byte by byte rather than memcpy'd, which keeps the
+// parser independent of host endianness.
+// ---------------------------------------------------------------------------
+
+class Reader {
+public:
+    Reader(const std::uint8_t* data, std::size_t size)
+        : data_(data), size_(size) {}
+
+    bool ok() const { return ok_; }
+    const std::string& error() const { return error_; }
+
+    std::size_t remaining() const { return size_ - offset_; }
+
+    bool fail(const std::string& what) {
+        if (ok_) {
+            error_ = what;
+            ok_ = false;
+        }
+        return false;
+    }
+
+    bool skip(std::size_t count) {
+        if (!ok_) {
+            return false;
+        }
+        if (count > remaining()) {
+            return fail("unexpected end of file");
+        }
+        offset_ += count;
+        return true;
+    }
+
+    bool u8(std::uint8_t& out) {
+        if (!ok_) {
+            return false;
+        }
+        if (remaining() < 1) {
+            return fail("unexpected end of file");
+        }
+        out = data_[offset_++];
+        return true;
+    }
+
+    bool i8(std::int8_t& out) {
+        std::uint8_t raw = 0;
+        if (!u8(raw)) {
+            return false;
+        }
+        out = static_cast<std::int8_t>(raw);
+        return true;
+    }
+
+    bool u16(std::uint16_t& out) {
+        if (!ok_) {
+            return false;
+        }
+        if (remaining() < 2) {
+            return fail("unexpected end of file");
+        }
+        out = static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(data_[offset_]) |
+            static_cast<std::uint16_t>(
+                static_cast<std::uint16_t>(data_[offset_ + 1]) << 8));
+        offset_ += 2;
+        return true;
+    }
+
+    bool i16(std::int16_t& out) {
+        std::uint16_t raw = 0;
+        if (!u16(raw)) {
+            return false;
+        }
+        out = static_cast<std::int16_t>(raw);
+        return true;
+    }
+
+    bool u32(std::uint32_t& out) {
+        if (!ok_) {
+            return false;
+        }
+        if (remaining() < 4) {
+            return fail("unexpected end of file");
+        }
+        out = static_cast<std::uint32_t>(data_[offset_]) |
+              (static_cast<std::uint32_t>(data_[offset_ + 1]) << 8) |
+              (static_cast<std::uint32_t>(data_[offset_ + 2]) << 16) |
+              (static_cast<std::uint32_t>(data_[offset_ + 3]) << 24);
+        offset_ += 4;
+        return true;
+    }
+
+    bool i32(std::int32_t& out) {
+        std::uint32_t raw = 0;
+        if (!u32(raw)) {
+            return false;
+        }
+        out = static_cast<std::int32_t>(raw);
+        return true;
+    }
+
+    bool f32(float& out) {
+        std::uint32_t raw = 0;
+        if (!u32(raw)) {
+            return false;
+        }
+        std::memcpy(&out, &raw, sizeof(out));
+        return true;
+    }
+
+    bool vec2f(vec2& out) { return f32(out.x) && f32(out.y); }
+
+    bool vec3f(vec3& out) { return f32(out.x) && f32(out.y) && f32(out.z); }
+
+    bool vec4f(vec4& out) {
+        return f32(out.x) && f32(out.y) && f32(out.z) && f32(out.w);
+    }
+
+    // A PMX "index" is 1, 2 or 4 bytes wide. Vertex indices are unsigned;
+    // bone / texture / material indices are signed so that -1 can mean "none".
+    bool index(int size, bool is_signed, std::int32_t& out) {
+        switch (size) {
+            case 1: {
+                if (is_signed) {
+                    std::int8_t v = 0;
+                    if (!i8(v)) {
+                        return false;
+                    }
+                    out = v;
+                } else {
+                    std::uint8_t v = 0;
+                    if (!u8(v)) {
+                        return false;
+                    }
+                    out = static_cast<std::int32_t>(v);
+                }
+                return true;
+            }
+            case 2: {
+                if (is_signed) {
+                    std::int16_t v = 0;
+                    if (!i16(v)) {
+                        return false;
+                    }
+                    out = v;
+                } else {
+                    std::uint16_t v = 0;
+                    if (!u16(v)) {
+                        return false;
+                    }
+                    out = static_cast<std::int32_t>(v);
+                }
+                return true;
+            }
+            case 4:
+                return i32(out);
+            default:
+                return fail("invalid index size in header");
+        }
+    }
+
+    // PMX `text`: a signed byte length followed by that many bytes. The bytes
+    // are UTF-16LE or UTF-8 depending on the file's global encoding flag.
+    bool text(std::string& out, std::uint8_t encoding) {
+        std::int32_t length = 0;
+        if (!i32(length)) {
+            return false;
+        }
+        if (length < 0) {
+            return fail("negative text length");
+        }
+        const std::size_t count = static_cast<std::size_t>(length);
+        if (count > remaining()) {
+            return fail("text runs past end of file");
+        }
+        const std::uint8_t* bytes = data_ + offset_;
+        offset_ += count;
+
+        if (encoding == kEncodingUtf8) {
+            out.assign(reinterpret_cast<const char*>(bytes), count);
+        } else {
+            out = utf16le_to_utf8(bytes, count);
+        }
+        return true;
+    }
+
+    // Rejects counts that cannot possibly fit in the remaining bytes, so a
+    // corrupt header cannot make us allocate gigabytes.
+    bool count(std::int32_t value, std::size_t min_bytes_each,
+               const char* what, std::size_t& out) {
+        if (value < 0) {
+            return fail(std::string("negative ") + what + " count");
+        }
+        const std::size_t count_value = static_cast<std::size_t>(value);
+        if (min_bytes_each > 0 && count_value > remaining() / min_bytes_each) {
+            return fail(std::string(what) + " count exceeds remaining data");
+        }
+        out = count_value;
+        return true;
+    }
+
+private:
+    static std::string utf16le_to_utf8(const std::uint8_t* bytes,
+                                       std::size_t length) {
+        std::string out;
+        out.reserve(length);
+        for (std::size_t i = 0; i + 1 < length; i += 2) {
+            std::uint32_t cp =
+                static_cast<std::uint32_t>(bytes[i]) |
+                (static_cast<std::uint32_t>(bytes[i + 1]) << 8);
+
+            // Combine a surrogate pair into one code point when present.
+            if (cp >= 0xD800u && cp <= 0xDBFFu && i + 3 < length) {
+                const std::uint32_t low =
+                    static_cast<std::uint32_t>(bytes[i + 2]) |
+                    (static_cast<std::uint32_t>(bytes[i + 3]) << 8);
+                if (low >= 0xDC00u && low <= 0xDFFFu) {
+                    cp = 0x10000u + ((cp - 0xD800u) << 10) + (low - 0xDC00u);
+                    i += 2;
+                }
+            }
+
+            if (cp < 0x80u) {
+                out.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800u) {
+                out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+            } else if (cp < 0x10000u) {
+                out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+            } else {
+                out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+            }
+        }
+        return out;
+    }
+
+    const std::uint8_t* data_ = nullptr;
+    std::size_t size_ = 0;
+    std::size_t offset_ = 0;
+    bool ok_ = true;
+    std::string error_;
+};
+
+struct Globals {
+    std::uint8_t encoding = kEncodingUtf16Le;
+    int additional_vec4 = 0;
+    int vertex_index_size = 4;
+    int texture_index_size = 4;
+    int material_index_size = 4;
+    int bone_index_size = 4;
+    int morph_index_size = 4;
+    int rigidbody_index_size = 4;
+};
+
+// MMD is a left-handed, Y-up, Z-forward system; OpenGL/GLM is right-handed.
+// Mirroring Z converts between them. That mirror also reverses triangle
+// orientation, which is exactly what we want: PMX stores clockwise-wound
+// front faces, and our pipelines expect counter-clockwise, so the indices can
+// be used unchanged.
+vec3 to_right_handed(const vec3& v) { return vec3(v.x, v.y, -v.z); }
+
+bool read_header(Reader& r, Globals& globals, std::string& model_name) {
+    std::uint8_t signature[4] = {0, 0, 0, 0};
+    for (std::uint8_t& byte : signature) {
+        if (!r.u8(byte)) {
+            return false;
+        }
+    }
+    if (std::memcmp(signature, "PMX ", 4) != 0) {
+        return r.fail("not a PMX file (bad signature)");
+    }
+
+    float version = 0.0f;
+    if (!r.f32(version)) {
+        return false;
+    }
+    // 2.0 and 2.1 share a layout up to the bone section; the version only
+    // gates extra sections and a couple of optional flags.
+    if (version < 1.9f || version > 2.2f) {
+        return r.fail("unsupported PMX version");
+    }
+
+    std::uint8_t globals_count = 0;
+    if (!r.u8(globals_count)) {
+        return false;
+    }
+    if (globals_count < 8) {
+        return r.fail("truncated PMX globals header");
+    }
+
+    std::uint8_t values[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (std::uint8_t& value : values) {
+        if (!r.u8(value)) {
+            return false;
+        }
+    }
+    // A file may declare more than 8 globals; skip whatever we do not know.
+    if (globals_count > 8 && !r.skip(globals_count - 8u)) {
+        return false;
+    }
+
+    globals.encoding = values[0];
+    globals.additional_vec4 = values[1];
+    globals.vertex_index_size = values[2];
+    globals.texture_index_size = values[3];
+    globals.material_index_size = values[4];
+    globals.bone_index_size = values[5];
+    globals.morph_index_size = values[6];
+    globals.rigidbody_index_size = values[7];
+
+    if (globals.encoding != kEncodingUtf16Le &&
+        globals.encoding != kEncodingUtf8) {
+        return r.fail("unknown text encoding");
+    }
+    if (globals.additional_vec4 < 0 || globals.additional_vec4 > 4) {
+        return r.fail("invalid additional vec4 count");
+    }
+    const int sizes[6] = {globals.vertex_index_size, globals.texture_index_size,
+                          globals.material_index_size, globals.bone_index_size,
+                          globals.morph_index_size,
+                          globals.rigidbody_index_size};
+    for (int size : sizes) {
+        if (size != 1 && size != 2 && size != 4) {
+            return r.fail("invalid index size in header");
+        }
+    }
+
+    std::string name_local;
+    std::string name_universal;
+    std::string comment_local;
+    std::string comment_universal;
+    if (!r.text(name_local, globals.encoding) ||
+        !r.text(name_universal, globals.encoding) ||
+        !r.text(comment_local, globals.encoding) ||
+        !r.text(comment_universal, globals.encoding)) {
+        return false;
+    }
+    model_name = name_universal.empty() ? name_local : name_universal;
+    return true;
+}
+
+bool read_vertices(Reader& r, const Globals& globals, MeshData& mesh) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    // Smallest possible vertex is BDEF1 with 1-byte indices.
+    if (!r.count(declared, 1, "vertex", count)) {
+        return false;
+    }
+
+    mesh.vertices.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        Vertex vertex;
+
+        vec3 position;
+        vec3 normal;
+        vec2 uv;
+        if (!r.vec3f(position) || !r.vec3f(normal) || !r.vec2f(uv)) {
+            return false;
+        }
+        vertex.position = to_right_handed(position);
+        vertex.normal = to_right_handed(normal);
+        vertex.uv = uv;
+
+        if (globals.additional_vec4 > 0 &&
+            !r.skip(static_cast<std::size_t>(globals.additional_vec4) * 16u)) {
+            return false;
+        }
+
+        std::uint8_t weight_type = 0;
+        if (!r.u8(weight_type)) {
+            return false;
+        }
+
+        // Reads one bone index, then stores it with its weight. `nil` (-1)
+        // influences are dropped, which is how BDEF1/2 leave slots unused.
+        const int index_size = globals.bone_index_size;
+        const auto read_bone = [&](int slot, float weight) -> bool {
+            std::int32_t bone = -1;
+            if (!r.index(index_size, true, bone)) {
+                return false;
+            }
+            if (bone >= 0 && weight > 0.0f) {
+                vertex.set_influence(slot, static_cast<std::uint32_t>(bone),
+                                     weight);
+            }
+            return true;
+        };
+
+        switch (weight_type) {
+            case kWeightBdef1: {
+                if (!read_bone(0, 1.0f)) {
+                    return false;
+                }
+                break;
+            }
+            case kWeightBdef2:
+            case kWeightSdef: {
+                std::int32_t first = -1;
+                std::int32_t second = -1;
+                float weight = 0.0f;
+                if (!r.index(index_size, true, first) ||
+                    !r.index(index_size, true, second) || !r.f32(weight)) {
+                    return false;
+                }
+                if (first >= 0 && weight > 0.0f) {
+                    vertex.set_influence(0, static_cast<std::uint32_t>(first),
+                                         weight);
+                }
+                if (second >= 0 && weight < 1.0f) {
+                    vertex.set_influence(1, static_cast<std::uint32_t>(second),
+                                         1.0f - weight);
+                }
+                // SDEF carries the sphere parameters C/R0/R1, which only matter
+                // to a dedicated SDEF evaluator. The two BDEF2 weights above are
+                // the standard fallback, so the payload is read and discarded.
+                // The indices and weight are already consumed at this point.
+                if (weight_type == kWeightSdef && !r.skip(36u)) {
+                    return false;
+                }
+                break;
+            }
+            case kWeightBdef4:
+            case kWeightQdef: {
+                std::int32_t bones[4] = {-1, -1, -1, -1};
+                float weights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                for (int k = 0; k < 4; ++k) {
+                    if (!r.index(index_size, true, bones[k])) {
+                        return false;
+                    }
+                }
+                for (float& w : weights) {
+                    if (!r.f32(w)) {
+                        return false;
+                    }
+                }
+                for (int k = 0; k < 4; ++k) {
+                    if (bones[k] >= 0 && weights[k] > 0.0f) {
+                        vertex.set_influence(k,
+                                             static_cast<std::uint32_t>(bones[k]),
+                                             weights[k]);
+                    }
+                }
+                break;
+            }
+            default:
+                return r.fail("unknown vertex weight deform type");
+        }
+
+        float edge_scale = 0.0f;
+        if (!r.f32(edge_scale)) {
+            return false;
+        }
+        mesh.vertices.push_back(vertex);
+    }
+    return true;
+}
+
+bool read_surfaces(Reader& r, const Globals& globals, MeshData& mesh) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, static_cast<std::size_t>(globals.vertex_index_size),
+                 "surface", count)) {
+        return false;
+    }
+    if (count % 3u != 0u) {
+        return r.fail("surface count is not a multiple of three");
+    }
+
+    mesh.indices.reserve(count);
+    const std::int32_t vertex_count =
+        static_cast<std::int32_t>(mesh.vertices.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        std::int32_t index = 0;
+        if (!r.index(globals.vertex_index_size, false, index)) {
+            return false;
+        }
+        if (index < 0 || index >= vertex_count) {
+            return r.fail("surface references a vertex out of range");
+        }
+        mesh.indices.push_back(static_cast<std::uint32_t>(index));
+    }
+    return true;
+}
+
+bool read_textures(Reader& r, const Globals& globals,
+                   std::vector<std::string>& paths) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    // Each path is at least a 4-byte length prefix.
+    if (!r.count(declared, 4, "texture", count)) {
+        return false;
+    }
+    paths.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string path;
+        if (!r.text(path, globals.encoding)) {
+            return false;
+        }
+        paths.push_back(std::move(path));
+    }
+    return true;
+}
+
+bool read_materials(Reader& r, const Globals& globals,
+                    const std::vector<std::string>& texture_paths,
+                    std::vector<Material>& materials) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, 4, "material", count)) {
+        return false;
+    }
+
+    const int texture_count = static_cast<int>(texture_paths.size());
+    std::uint32_t offset = 0;
+    materials.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        Material material;
+
+        std::string name_local;
+        std::string name_universal;
+        vec4 diffuse;
+        vec3 specular;
+        float specular_strength = 0.0f;
+        vec3 ambient;
+        std::uint8_t flags = 0;
+        vec4 edge_color;
+        float edge_scale = 0.0f;
+        std::int32_t texture_index = -1;
+        std::int32_t environment_index = -1;
+        std::uint8_t environment_blend = 0;
+        std::uint8_t toon_reference = 0;
+        std::string metadata;
+        std::int32_t surface_count = 0;
+
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) ||
+            !r.vec4f(diffuse) || !r.vec3f(specular) ||
+            !r.f32(specular_strength) || !r.vec3f(ambient) || !r.u8(flags) ||
+            !r.vec4f(edge_color) || !r.f32(edge_scale) ||
+            !r.index(globals.texture_index_size, true, texture_index) ||
+            !r.index(globals.texture_index_size, true, environment_index) ||
+            !r.u8(environment_blend) || !r.u8(toon_reference)) {
+            return false;
+        }
+
+        // The toon value is a texture index or a raw byte, depending on the
+        // reference mode. Either way it must be consumed to stay aligned.
+        if (toon_reference == 0) {
+            std::int32_t toon_index = -1;
+            if (!r.index(globals.texture_index_size, true, toon_index)) {
+                return false;
+            }
+        } else {
+            std::uint8_t toon_byte = 0;
+            if (!r.u8(toon_byte)) {
+                return false;
+            }
+        }
+
+        if (!r.text(metadata, globals.encoding) || !r.i32(surface_count)) {
+            return false;
+        }
+        if (surface_count < 0 || surface_count % 3 != 0) {
+            return r.fail("material surface count is invalid");
+        }
+
+        material.name = name_universal.empty() ? name_local : name_universal;
+        material.diffuse = diffuse;
+        material.specular = specular;
+        material.shininess = specular_strength;
+        material.ambient = ambient;
+        material.double_sided = (flags & kMaterialNoCull) != 0;
+        material.has_edges = (flags & kMaterialHasEdge) != 0;
+        material.texture =
+            (texture_index >= 0 && texture_index < texture_count)
+                ? texture_index
+                : -1;
+        material.index_offset = offset;
+        material.index_count = static_cast<std::uint32_t>(surface_count);
+        offset += static_cast<std::uint32_t>(surface_count);
+
+        materials.push_back(std::move(material));
+    }
+    return true;
+}
+
+bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, 4, "bone", count)) {
+        return false;
+    }
+
+    skeleton.bones().reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string name_local;
+        std::string name_universal;
+        vec3 position;
+        std::int32_t parent = -1;
+        std::int32_t layer = 0;
+        std::uint8_t flags_low = 0;
+        std::uint8_t flags_high = 0;
+
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) || !r.vec3f(position) ||
+            !r.index(globals.bone_index_size, true, parent) || !r.i32(layer) ||
+            !r.u8(flags_low) || !r.u8(flags_high)) {
+            return false;
+        }
+        const std::uint16_t flags = static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(flags_low) |
+            static_cast<std::uint16_t>(
+                static_cast<std::uint16_t>(flags_high) << 8));
+
+        // Tail position: a vector, or a bone index when the flag says so.
+        if ((flags & kBoneTailIsIndex) != 0) {
+            std::int32_t tail = -1;
+            if (!r.index(globals.bone_index_size, true, tail)) {
+                return false;
+            }
+        } else {
+            vec3 tail;
+            if (!r.vec3f(tail)) {
+                return false;
+            }
+        }
+
+        if ((flags & (kBoneInheritRotation | kBoneInheritTranslation)) != 0) {
+            std::int32_t inherit_parent = -1;
+            float influence = 0.0f;
+            if (!r.index(globals.bone_index_size, true, inherit_parent) ||
+                !r.f32(influence)) {
+                return false;
+            }
+        }
+        if ((flags & kBoneFixedAxis) != 0) {
+            vec3 axis;
+            if (!r.vec3f(axis)) {
+                return false;
+            }
+        }
+        if ((flags & kBoneLocalAxis) != 0) {
+            vec3 local_x;
+            vec3 local_z;
+            if (!r.vec3f(local_x) || !r.vec3f(local_z)) {
+                return false;
+            }
+        }
+        if ((flags & kBoneExternalParent) != 0) {
+            // Documented as an index, but in practice a plain 4-byte int.
+            std::int32_t external_parent = 0;
+            if (!r.i32(external_parent)) {
+                return false;
+            }
+        }
+        if ((flags & kBoneIk) != 0) {
+            std::int32_t target = -1;
+            std::int32_t loop_count = 0;
+            float limit_radian = 0.0f;
+            std::int32_t link_count = 0;
+            if (!r.index(globals.bone_index_size, true, target) ||
+                !r.i32(loop_count) || !r.f32(limit_radian) ||
+                !r.i32(link_count) || link_count < 0) {
+                return false;
+            }
+            for (std::int32_t link = 0; link < link_count; ++link) {
+                std::int32_t link_bone = -1;
+                std::uint8_t has_limits = 0;
+                if (!r.index(globals.bone_index_size, true, link_bone) ||
+                    !r.u8(has_limits)) {
+                    return false;
+                }
+                if (has_limits != 0) {
+                    vec3 limit_min;
+                    vec3 limit_max;
+                    if (!r.vec3f(limit_min) || !r.vec3f(limit_max)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // Only a parent that already exists can be linked, which also
+        // guarantees the hierarchy stays acyclic.
+        const int parent_index =
+            (parent >= 0 && parent < static_cast<std::int32_t>(i)) ? parent : -1;
+        skeleton.add_bone(name_universal.empty() ? name_local : name_universal,
+                          parent_index, to_right_handed(position));
+    }
+    return true;
+}
+
+}  // namespace
+
+PmxResult parse_pmx(const std::uint8_t* data, std::size_t size) {
+    PmxResult result;
+    if (data == nullptr || size < 4) {
+        result.error = "empty or truncated PMX data";
+        return result;
+    }
+
+    Reader reader(data, size);
+    Globals globals;
+    std::string model_name;
+    if (!read_header(reader, globals, model_name)) {
+        result.error = reader.ok() ? "malformed PMX header" : reader.error();
+        return result;
+    }
+
+    Model model;
+    model.name = model_name;
+
+    if (!read_vertices(reader, globals, model.mesh) ||
+        !read_surfaces(reader, globals, model.mesh) ||
+        !read_textures(reader, globals, model.texture_paths) ||
+        !read_materials(reader, globals, model.texture_paths, model.materials)) {
+        result.error = reader.error();
+        return result;
+    }
+
+    // Material index ranges must tile the index buffer exactly; a mismatch
+    // means the file is inconsistent and drawing it would read out of range.
+    std::size_t material_indices = 0;
+    for (const Material& material : model.materials) {
+        material_indices += material.index_count;
+    }
+    if (material_indices != model.mesh.indices.size()) {
+        result.error = "material surface ranges do not match the index buffer";
+        return result;
+    }
+
+    if (!read_bones(reader, globals, model.skeleton)) {
+        result.error = reader.error();
+        return result;
+    }
+    model.skeleton.compute_rest();
+
+    result.ok = true;
+    result.model = std::move(model);
+    return result;
+}
+
+PmxResult load_pmx(const std::string& path) {
+    PmxResult result;
+
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        result.error = "cannot open file: " + path;
+        return result;
+    }
+    const std::streamoff end = file.tellg();
+    if (end <= 0) {
+        result.error = "file is empty: " + path;
+        return result;
+    }
+    file.seekg(0, std::ios::beg);
+
+    std::vector<std::uint8_t> buffer(static_cast<std::size_t>(end));
+    if (!file.read(reinterpret_cast<char*>(buffer.data()),
+                   static_cast<std::streamsize>(buffer.size()))) {
+        result.error = "failed to read file: " + path;
+        return result;
+    }
+    return parse_pmx(buffer.data(), buffer.size());
+}
+
+}  // namespace ms

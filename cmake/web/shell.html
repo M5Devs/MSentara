@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<!--
+  MSentara — cross-platform 2D/3D animation studio
+  Copyright (C) 2026 The MSentara Authors
+  Licensed under the GNU General Public License v3 or later.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>MSentara</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #202020;
+      color: #dcdcdc;
+      font-family: sans-serif;
+    }
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      border: 0;
+      outline: none;
+      touch-action: none;
+    }
+    #status {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div id="status">Loading MSentara&hellip;</div>
+  {{{ SCRIPT }}}
+</body>
+</html>
