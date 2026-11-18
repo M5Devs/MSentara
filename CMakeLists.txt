@@ -59,6 +59,7 @@ add_library(msentara_core STATIC
     src/core/Camera.cpp
     src/core/Mesh.cpp
     src/core/Morph.cpp
+    src/core/ProjectIO.cpp
     src/core/Scene.cpp
     src/core/Skeleton.cpp
     src/core/Timeline.cpp
@@ -66,6 +67,9 @@ add_library(msentara_core STATIC
 )
 target_include_directories(msentara_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(msentara_core PUBLIC glm::glm)
+# nlohmann/json is used only by ProjectIO.cpp, so it stays PRIVATE: the rest
+# of core (and every test) keeps compiling without the heavy JSON header.
+target_link_libraries(msentara_core PRIVATE nlohmann_json)
 msentara_set_warnings(msentara_core)
 
 # ---------------------------------------------------------------------------
@@ -133,7 +137,10 @@ msentara_set_warnings(MSentara)
 if(MSENTARA_WEB)
     set_target_properties(MSentara PROPERTIES
         SUFFIX ".html"
-        LINK_FLAGS "-sUSE_WEBGL2=1 -sFULL_ES3=1 -sALLOW_MEMORY_GROWTH=1 \
+        # MIN/MAX_WEBGL_VERSION=2 force WebGL2 (GLES3); USE_WEBGL2/FULL_ES3
+        # keep the GLES3 sokol backend and full ES3 shader syntax enabled.
+        LINK_FLAGS "-sUSE_WEBGL2=1 -sFULL_ES3=1 -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
+                    -sALLOW_MEMORY_GROWTH=1 \
                     -sEXIT_RUNTIME=0 -sSTACK_SIZE=1048576 \
                     --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/cmake/web/shell.html"
     )

@@ -1,0 +1,131 @@
+# MSentara — cross-platform CI
+# Copyright (C) 2026 The MSentara Authors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Three jobs mirror the three platforms Milestone 0 targets:
+#   * linux      — GCC and Clang, Debug, unit tests + headless smoke run
+#   * windows    — MSVC, Release build of the desktop app
+#   * emscripten — WebGL2/WASM bundle, uploaded as a downloadable artifact
+#
+# Every job configures from scratch (no build cache), which is also the
+# regression test for the pinned FetchContent revisions: if a pin stops
+# resolving, a fresh clone fails right here.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a fast push does not queue behind
+# a stale build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.compiler }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    env:
+      CC: ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }}
+      CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'g++' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # sokol_app's X11 backend needs the X11/GL headers and unversioned .so
+      # symlinks (only the -dev packages provide them).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libgl1-mesa-dev libglx-dev \
+            libx11-dev libxcursor-dev libxi-dev libxext-dev \
+            libxrandr-dev libxinerama-dev \
+            xvfb x11-utils mesa-utils
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_FLAGS=-g0
+          -DCMAKE_CXX_FLAGS=-g0
+
+      # -j 2 keeps peak memory modest: sokol and glm are large translation
+      # units and a wide parallel build has been observed to exhaust RAM.
+      - name: Build
+        run: cmake --build build -j 2
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Headless smoke run
+        run: |
+          Xvfb :99 -screen 0 1600x900x24 &
+          sleep 2
+          export DISPLAY=:99
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GALLIUM_DRIVER=llvmpipe
+          export MESA_GL_VERSION_OVERRIDE=4.5
+          export MESA_GLSL_VERSION_OVERRIDE=450
+          # Render three frames against the generated test model and exit.
+          python3 scripts/make_test_pmx.py test_model.pmx
+          MSENTARA_FRAME_LIMIT=3 ./build/MSentara --pmx test_model.pmx
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put Ninja on PATH; the generator itself is selected by -G below.
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j 2
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  emscripten:
+    name: Emscripten (WebGL2)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.61
+
+      - name: Configure
+        run: >
+          emcmake cmake -S . -B build-web -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-web -j 2
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: msentara-web
+          path: |
+            build-web/MSentara.html
+            build-web/MSentara.js
+            build-web/MSentara.wasm
+          if-no-files-found: error

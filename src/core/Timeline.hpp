@@ -83,6 +83,9 @@ struct Timeline {
     float fps = 24.0f;
     float current_frame = 1.0f;
     bool playing = false;
+    // When true, playback wraps from frame_end back to frame_start instead of
+    // stopping. Persisted by the .msentara project format.
+    bool loop = true;
 
     int duration_frames() const { return frame_end - frame_start; }
     float duration_seconds() const;

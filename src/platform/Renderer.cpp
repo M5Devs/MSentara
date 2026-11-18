@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <string>
 
 #include "platform/ImageIO.hpp"
 #include "platform/SokolConfig.hpp"
@@ -37,6 +38,21 @@ constexpr int kAttrPosition = 0;
 constexpr int kAttrNormal = 1;
 constexpr int kAttrColor = 2;
 
+// The desktop build targets GL 4.1 core, the web build GLES3 (WebGL2). The two
+// take different GLSL versions and the ES variant additionally needs explicit
+// default precisions (including for sampler2D, which has none in ES fragment
+// shaders). The shader bodies below are shared and only this prefix differs,
+// so there is a single copy of the actual lighting code.
+#if defined(__EMSCRIPTEN__)
+constexpr const char* kGlslPrologue =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "precision highp sampler2D;\n";
+#else
+constexpr const char* kGlslPrologue = "#version 410\n";
+#endif
+
 // Two mat4 members. With SG_UNIFORMLAYOUT_NATIVE sokol packs them back to back
 // with no padding, so the block maps onto two plain `uniform mat4`s.
 struct ShaderParams {
@@ -44,9 +60,7 @@ struct ShaderParams {
     float model[16];
 };
 
-const char* const kVertexShader = R"(
-#version 410
-
+const char* const kVertexBody = R"(
 uniform mat4 mvp;
 uniform mat4 model;
 
@@ -66,9 +80,7 @@ void main() {
 }
 )";
 
-const char* const kFragmentShader = R"(
-#version 410
-
+const char* const kFragmentBody = R"(
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec3 v_color;
 
@@ -84,11 +96,25 @@ void main() {
 }
 )";
 
+// sokol_gfx takes the GLSL source as a single C string, so prologue and body
+// are joined once into a function-local static that lives for the program.
+const char* kVertexShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kVertexBody;
+    return source.c_str();
+}
+
+const char* kFragmentShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kFragmentBody;
+    return source.c_str();
+}
+
 sg_shader_desc make_shader_desc() {
     sg_shader_desc desc = {};
-    desc.vertex_func.source = kVertexShader;
+    desc.vertex_func.source = kVertexShaderSource();
     desc.vertex_func.entry = "main";
-    desc.fragment_func.source = kFragmentShader;
+    desc.fragment_func.source = kFragmentShaderSource();
     desc.fragment_func.entry = "main";
 
     // GL 4.1 and WebGL2 cannot bind attribute locations by name, so sokol
@@ -180,9 +206,7 @@ struct SkinnedParams {
     float diffuse[4];
 };
 
-const char* const kSkinnedVertexShader = R"(
-#version 410
-
+const char* const kSkinnedVertexBody = R"(
 uniform mat4 mvp;
 uniform mat4 model;
 
@@ -203,9 +227,7 @@ void main() {
 }
 )";
 
-const char* const kSkinnedFragmentShader = R"(
-#version 410
-
+const char* const kSkinnedFragmentBody = R"(
 uniform vec4 diffuse;
 uniform sampler2D tex;
 
@@ -229,11 +251,23 @@ void main() {
 }
 )";
 
+const char* kSkinnedVertexShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kSkinnedVertexBody;
+    return source.c_str();
+}
+
+const char* kSkinnedFragmentShaderSource() {
+    static const std::string source =
+        std::string(kGlslPrologue) + kSkinnedFragmentBody;
+    return source.c_str();
+}
+
 sg_shader_desc make_skinned_shader_desc() {
     sg_shader_desc desc = {};
-    desc.vertex_func.source = kSkinnedVertexShader;
+    desc.vertex_func.source = kSkinnedVertexShaderSource();
     desc.vertex_func.entry = "main";
-    desc.fragment_func.source = kSkinnedFragmentShader;
+    desc.fragment_func.source = kSkinnedFragmentShaderSource();
     desc.fragment_func.entry = "main";
 
     desc.attrs[kAttrPosition].base_type = SG_SHADERATTRBASETYPE_FLOAT;

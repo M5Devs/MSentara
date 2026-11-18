@@ -164,7 +164,14 @@ float Timeline::advance(float dt) {
     const float end = static_cast<float>(frame_end);
     const float start = static_cast<float>(frame_start);
     if (next > end) {
-        next = start + std::fmod(next - start, end - start + 1.0f);
+        if (loop) {
+            next = start + std::fmod(next - start, end - start + 1.0f);
+        } else {
+            // Clamp to the last frame and stop, so a one-shot playback holds
+            // its final pose instead of jumping back to the start.
+            next = end;
+            playing = false;
+        }
     }
     set_frame(next);
     return current_frame;

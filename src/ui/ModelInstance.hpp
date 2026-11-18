@@ -50,6 +50,9 @@ public:
     bool valid() const { return valid_; }
     const std::string& name() const { return model_.name; }
 
+    // The path the model was loaded from, so a project can record it.
+    const std::string& source_path() const { return source_path_; }
+
     const Model& model() const { return model_; }
     Model& model() { return model_; }
 
@@ -80,6 +83,10 @@ public:
     }
     const std::string& clip_name() const { return clip_.name; }
 
+    // The path the current clip was loaded from, so a project can record it.
+    const std::string& motion_path() const { return motion_path_; }
+    void set_motion_path(const std::string& path) { motion_path_ = path; }
+
     // Writes the clip at `frame` into the pose (additively over the rest pose)
     // and re-evaluates the skeleton. Does nothing when no clip is loaded.
     // Morph scalar tracks in the clip are written into the morph weights.
@@ -108,6 +115,13 @@ public:
     // into the local delta the rig stores.
     void set_bone_global(int bone, const mat4& new_global);
 
+    // Name-keyed overrides used by the .msentara project loader. Both return
+    // false (and change nothing) when no morph/bone has that name, so a
+    // project still opens after the model was re-exported with different
+    // names. A successful call re-evaluates the pose.
+    bool set_morph_weight(const std::string& name, float weight);
+    bool set_bone_delta(const std::string& name, const Transform& delta);
+
 private:
     const GpuTexture& texture_for(const Material& material) const;
 
@@ -120,6 +134,8 @@ private:
     Transform transform_;
     AnimationClip clip_;
     bool has_clip_ = false;
+    std::string source_path_;
+    std::string motion_path_;
     bool ik_enabled_ = true;
     int selected_bone_ = -1;
     bool valid_ = false;

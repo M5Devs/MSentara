@@ -170,6 +170,21 @@ void test_timeline_advance_wraps() {
     t.playing = true;
     const float f = t.advance(1.0f);  // would land on 19, wraps into range
     MS_CHECK(f >= 0.0f && f <= 10.0f);
+    MS_CHECK(t.playing);
+}
+
+void test_timeline_advance_stops_when_not_looping() {
+    Timeline t;
+    t.fps = 10.0f;
+    t.frame_start = 0;
+    t.frame_end = 10;
+    t.loop = false;
+    t.set_frame(9.0f);
+    t.playing = true;
+    // A one-shot clip clamps to the last frame and clears `playing`.
+    const float f = t.advance(1.0f);
+    MS_CHECK(nearly(f, 10.0f));
+    MS_CHECK(!t.playing);
 }
 
 void test_duration_seconds() {
@@ -201,6 +216,7 @@ int main() {
     test_timeline_step();
     test_timeline_advance_only_when_playing();
     test_timeline_advance_wraps();
+    test_timeline_advance_stops_when_not_looping();
     test_duration_seconds();
     return ms::test::summary("timeline");
 }

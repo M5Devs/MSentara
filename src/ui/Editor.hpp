@@ -19,6 +19,7 @@
 #include <string>
 
 #include "core/Camera.hpp"
+#include "core/ProjectIO.hpp"
 #include "core/Scene.hpp"
 #include "core/Timeline.hpp"
 #include "platform/RenderTypes.hpp"
@@ -72,6 +73,41 @@ public:
         return pending_vmd_;
     }
 
+    // A .msentara project open/save requested from the File menu. As with a
+    // model load, the app performs the actual file I/O because it owns the
+    // renderer and the model.
+    void request_open_project(const std::string& path) {
+        pending_project_open_ = path;
+        has_pending_project_open_ = true;
+    }
+    bool has_pending_project_open() const { return has_pending_project_open_; }
+    std::string take_pending_project_open() {
+        has_pending_project_open_ = false;
+        return pending_project_open_;
+    }
+
+    void request_save_project(const std::string& path) {
+        pending_project_save_ = path;
+        has_pending_project_save_ = true;
+    }
+    bool has_pending_project_save() const { return has_pending_project_save_; }
+    std::string take_pending_project_save() {
+        has_pending_project_save_ = false;
+        return pending_project_save_;
+    }
+
+    // Gathers the current editor state into a serialisable project, recording
+    // the given model/motion paths (the editor does not know them). Only
+    // non-default morph weights and bone poses are written, so the file stays
+    // small and a diff shows exactly what the user changed.
+    Project capture_project(const std::string& model_path,
+                            const std::string& motion_path) const;
+
+    // Applies a loaded project to the editor's own state (timeline and
+    // camera). The model, motion and pose overrides are the app's job, since
+    // they need the renderer.
+    void apply_project_view(const Project& project);
+
     // True while a playback transport control (play/pause/reset/scrub) changed
     // the timeline this frame, so the app can re-apply the animation.
     bool timeline_changed() const { return timeline_changed_; }
@@ -118,10 +154,15 @@ private:
     bool has_pending_load_ = false;
     std::string pending_vmd_;
     bool has_pending_vmd_ = false;
+    std::string pending_project_open_;
+    bool has_pending_project_open_ = false;
+    std::string pending_project_save_;
+    bool has_pending_project_save_ = false;
     bool timeline_changed_ = false;
     std::string status_;
     char path_buffer_[512] = {};
     char vmd_path_buffer_[512] = {};
+    char project_path_buffer_[512] = {};
 
     bool show_demo_ = false;
     bool layout_initialised_ = false;

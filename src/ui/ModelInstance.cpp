@@ -49,6 +49,7 @@ bool ModelInstance::load(const std::string& path, Renderer& renderer,
         return false;
     }
     model_ = std::move(result.model);
+    source_path_ = path;
 
     // Decode and upload every texture the model references. A missing file is
     // not fatal: that material falls back to the shared white texture.
@@ -93,6 +94,8 @@ void ModelInstance::clear(Renderer& renderer) {
     transform_ = Transform{};
     clip_ = AnimationClip{};
     has_clip_ = false;
+    source_path_.clear();
+    motion_path_.clear();
     ik_enabled_ = true;
     selected_bone_ = -1;
     vertex_offsets_.clear();
@@ -179,6 +182,36 @@ void ModelInstance::set_bone_global(int bone, const mat4& new_global) {
     // Children read this bone's global, so the whole chain must be refreshed
     // before the next skinning pass.
     evaluate();
+}
+
+bool ModelInstance::set_morph_weight(const std::string& name, float weight) {
+    if (!valid_) {
+        return false;
+    }
+    const int index = model_.morphs.find(name);
+    if (index < 0) {
+        return false;
+    }
+    model_.morphs.set_weight(index, weight);
+    evaluate();
+    return true;
+}
+
+bool ModelInstance::set_bone_delta(const std::string& name,
+                                   const Transform& delta) {
+    if (!valid_) {
+        return false;
+    }
+    const std::vector<Bone>& bones = model_.skeleton.bones();
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        if (bones[i].name != name) {
+            continue;
+        }
+        pose_.delta[i] = delta;
+        evaluate();
+        return true;
+    }
+    return false;
 }
 
 }  // namespace ms

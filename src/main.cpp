@@ -21,6 +21,7 @@
 
 #include "core/Animation.hpp"
 #include "core/Mesh.hpp"
+#include "core/ProjectIO.hpp"
 #include "formats/VmdLoader.hpp"
 #include "platform/Renderer.hpp"
 #include "platform/SokolConfig.hpp"
@@ -57,6 +58,11 @@ std::string g_pmx_path;
 // A VMD path supplied on the command line (--vmd <path>). Loaded after the
 // model, in init_cb, so the motion is applied to a rig that already exists.
 std::string g_vmd_path;
+
+// A .msentara project path supplied on the command line (--project <path>).
+// A project supersedes --pmx/--vmd: it names both files itself, so it is
+// loaded last and its paths win.
+std::string g_project_path;
 
 // Optional frame limit, used by the headless smoke test to exit on its own.
 // Unset (or 0) means "run until the user quits".
@@ -123,6 +129,7 @@ void load_motion(const std::string& path) {
     const std::size_t bone_tracks = result.clip.bone_tracks.size();
     const std::size_t scalar_tracks = result.clip.scalar_tracks.size();
     g_model.set_clip(std::move(result.clip));
+    g_model.set_motion_path(path);
 
     // The timeline drives the motion; start at frame 0 and span the clip.
     Timeline& timeline = g_editor.timeline();
@@ -136,6 +143,81 @@ void load_motion(const std::string& path) {
     std::printf("MSentara: loaded VMD '%s' (%zu bone tracks, %zu scalar tracks, "
                 "%d frames)\n",
                 path.c_str(), bone_tracks, scalar_tracks, end);
+}
+
+// Loads a .msentara project: model, then motion, then the editor state and the
+// name-keyed pose overrides. Model and motion paths are stored verbatim in the
+// project, so they are used as-is (a project is expected to be opened from the
+// directory it was authored in, or to hold absolute paths).
+void load_project_file(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    Project project;
+    std::string error;
+    if (!load_project(path, project, error)) {
+        g_editor.set_status("Failed to open project " + path + ": " + error);
+        std::fprintf(stderr, "MSentara: failed to open project '%s': %s\n",
+                     path.c_str(), error.c_str());
+        return;
+    }
+
+    if (!project.model_path.empty()) {
+        load_model(project.model_path);
+    }
+    if (!project.motion_path.empty() && g_model.valid()) {
+        load_motion(project.motion_path);
+    }
+
+    // Timeline and camera come from the editor itself.
+    g_editor.apply_project_view(project);
+
+    if (g_model.valid()) {
+        g_model.set_ik_enabled(project.ik_enabled);
+        for (const ProjectMorphWeight& morph : project.morphs) {
+            g_model.set_morph_weight(morph.name, morph.weight);
+        }
+        for (const ProjectBonePose& bone : project.bones) {
+            Transform delta;
+            delta.position = bone.position;
+            delta.rotation = bone.rotation;
+            delta.scale = bone.scale;
+            g_model.set_bone_delta(bone.name, delta);
+        }
+        // Re-apply the frame now that the overrides are in, so the reopened
+        // pose matches what was saved.
+        if (g_model.has_animation()) {
+            g_model.apply_animation(g_editor.timeline().current_frame);
+        }
+    }
+
+    g_editor.set_status("Opened project " + path);
+    std::printf("MSentara: opened project '%s' (model='%s', motion='%s')\n",
+                path.c_str(), project.model_path.c_str(),
+                project.motion_path.c_str());
+}
+
+// Saves the current editor state as a .msentara project.
+void save_project_file(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    const std::string model_path =
+        g_model.valid() ? g_model.source_path() : std::string();
+    const std::string motion_path =
+        g_model.valid() ? g_model.motion_path() : std::string();
+    const Project project =
+        g_editor.capture_project(model_path, motion_path);
+
+    std::string error;
+    if (!save_project(path, project, error)) {
+        g_editor.set_status("Failed to save project " + path + ": " + error);
+        std::fprintf(stderr, "MSentara: failed to save project '%s': %s\n",
+                     path.c_str(), error.c_str());
+        return;
+    }
+    g_editor.set_status("Saved project " + path);
+    std::printf("MSentara: saved project '%s'\n", path.c_str());
 }
 
 void init_cb() {
@@ -184,6 +266,17 @@ void init_cb() {
     if (!vmd.empty()) {
         load_motion(vmd);
     }
+
+    // A project supersedes --pmx/--vmd (it names both), so it is applied last.
+    std::string project = g_project_path;
+    if (project.empty()) {
+        if (const char* env = std::getenv("MSENTARA_PROJECT")) {
+            project = env;
+        }
+    }
+    if (!project.empty()) {
+        load_project_file(project);
+    }
 }
 
 void frame_cb() {
@@ -220,6 +313,12 @@ void frame_cb() {
     }
     if (g_editor.has_pending_vmd_load()) {
         load_motion(g_editor.take_pending_vmd_load());
+    }
+    if (g_editor.has_pending_project_open()) {
+        load_project_file(g_editor.take_pending_project_open());
+    }
+    if (g_editor.has_pending_project_save()) {
+        save_project_file(g_editor.take_pending_project_save());
     }
 
     // Drive the pose from the active clip when the timeline is playing, or
@@ -377,14 +476,22 @@ void event_cb(const sapp_event* ev) {
 }  // namespace
 
 sapp_desc sokol_main(int argc, char* argv[]) {
-    // Parse --pmx <path> here: argv is only available before the window
-    // exists, and the actual load waits for the GL context in init_cb.
+    // Parse the CLI here: argv is only available before the window exists, and
+    // the actual loads wait for the GL context in init_cb.
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if ((arg == "--pmx" || arg == "-p") && i + 1 < argc) {
             g_pmx_path = argv[++i];
         } else if (arg.rfind("--pmx=", 0) == 0) {
             g_pmx_path = arg.substr(6);
+        } else if ((arg == "--vmd" || arg == "-m") && i + 1 < argc) {
+            g_vmd_path = argv[++i];
+        } else if (arg.rfind("--vmd=", 0) == 0) {
+            g_vmd_path = arg.substr(6);
+        } else if (arg == "--project" && i + 1 < argc) {
+            g_project_path = argv[++i];
+        } else if (arg.rfind("--project=", 0) == 0) {
+            g_project_path = arg.substr(10);
         }
     }
 

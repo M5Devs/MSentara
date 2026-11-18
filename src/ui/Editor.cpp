@@ -158,6 +158,25 @@ void Editor::draw_main_menu_bar() {
         ImGui::MenuItem("Open…", "Ctrl+O", false, false);
         ImGui::MenuItem("Save", "Ctrl+S", false, false);
         ImGui::Separator();
+        // Native project files: a path field plus Save/Open, matching the
+        // import affordances below until a native file dialog lands.
+        ImGui::TextUnformatted("Project (.msentara)");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool project_submitted = ImGui::InputText(
+            "##project_path", project_path_buffer_, sizeof(project_path_buffer_),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Save Project") || project_submitted) {
+            if (project_path_buffer_[0] != '\0') {
+                request_save_project(project_path_buffer_);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Open Project")) {
+            if (project_path_buffer_[0] != '\0') {
+                request_open_project(project_path_buffer_);
+            }
+        }
+        ImGui::Separator();
         // A minimal import affordance: type or paste a path and press Load.
         // A native file dialog is a later milestone.
         ImGui::TextUnformatted("Import PMX");
@@ -642,6 +661,9 @@ void Editor::draw_timeline_panel() {
     ImGui::DragFloat("##fps", &timeline_.fps, 0.5f, 1.0f, 240.0f, "%.0f fps");
 
     ImGui::SameLine();
+    ImGui::Checkbox("Loop", &timeline_.loop);
+
+    ImGui::SameLine();
     ImGui::TextDisabled("| %d frames  (%.2fs @ %.0f fps)",
                         timeline_.frame_end - timeline_.frame_start,
                         timeline_.duration_seconds(), timeline_.fps);
@@ -718,6 +740,70 @@ void Editor::draw_timeline_panel() {
     }
 
     ImGui::End();
+}
+
+Project Editor::capture_project(const std::string& model_path,
+                                const std::string& motion_path) const {
+    Project project;
+    project.model_path = model_path;
+    project.motion_path = motion_path;
+
+    project.frame_start = timeline_.frame_start;
+    project.frame_end = timeline_.frame_end;
+    project.fps = timeline_.fps;
+    project.current_frame = timeline_.current_frame;
+    project.loop = timeline_.loop;
+
+    project.camera.target = camera_.target;
+    project.camera.distance = camera_.distance;
+    project.camera.yaw = camera_.yaw;
+    project.camera.pitch = camera_.pitch;
+
+    if (model_ != nullptr && model_->valid()) {
+        project.ik_enabled = model_->ik_enabled();
+
+        // Only non-zero morph weights are written: a default pose then yields
+        // an empty array, and a diff shows exactly which morphs the user
+        // touched.
+        const MorphSet& morphs = model_->morphs();
+        const std::vector<float>& weights = morphs.weights();
+        for (std::size_t i = 0; i < morphs.size() && i < weights.size(); ++i) {
+            if (weights[i] != 0.0f) {
+                project.morphs.push_back({morphs.target(static_cast<int>(i)).name,
+                                          weights[i]});
+            }
+        }
+
+        // Likewise, only bones whose delta differs from the rest pose are
+        // written, so an untouched rig serialises to an empty array.
+        const Pose& pose = model_->pose();
+        const std::vector<Bone>& bones = model_->model().skeleton.bones();
+        for (std::size_t i = 0; i < bones.size() && i < pose.delta.size(); ++i) {
+            const Transform& delta = pose.delta[i];
+            if (delta.position == vec3(0.0f) && delta.rotation == vec3(0.0f) &&
+                delta.scale == vec3(1.0f)) {
+                continue;
+            }
+            project.bones.push_back({bones[i].name, delta.position,
+                                     delta.rotation, delta.scale});
+        }
+    }
+
+    return project;
+}
+
+void Editor::apply_project_view(const Project& project) {
+    timeline_.frame_start = project.frame_start;
+    timeline_.frame_end = project.frame_end;
+    timeline_.fps = project.fps;
+    timeline_.loop = project.loop;
+    timeline_.playing = false;
+    timeline_.set_frame(project.current_frame);
+
+    camera_.target = project.camera.target;
+    camera_.distance = project.camera.distance;
+    camera_.yaw = project.camera.yaw;
+    camera_.pitch = project.camera.pitch;
 }
 
 }  // namespace ms

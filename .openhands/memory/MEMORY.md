@@ -217,3 +217,41 @@ code is included as SYSTEM so its warnings do not count.
 - The Emscripten path is wired but **unverified** — no `emcc` in this
   container. WebGL2/GLES3 is the target, so shaders must be ES3-compatible
   (no UBO-free assumptions, no desktop-only GLSL).
+
+## Milestone 4A — fresh FetchContent, `.msentara` project format, CI (2026-11-17)
+
+- **Fresh-fetch bug root cause**: `GIT_SHALLOW TRUE` on a *commit*-pinned
+  FetchContent does `git clone --no-checkout --depth 1 --no-single-branch`
+  then `git checkout <sha>`. A SHA that is not a branch tip (sokol's is not)
+  is absent from the depth-1 history → `fatal: unable to read tree`. Fix:
+  drop `GIT_SHALLOW` from the commit-pinned clones (sokol/imgui/imguizmo) and
+  pin stb to a SHA too. glm (tag 1.0.1) and nlohmann/json (release URL+hash)
+  keep shallow/URL fetching — a tag IS a tip so shallow is safe there.
+  `cmake/MSentaraDependencies.cmake` documents this; do not "optimise" it back.
+- **nlohmann/json** is fetched as the small `include.zip` release asset
+  (v3.11.3, SHA256 a22461d1…) rather than a git clone; exposed as an INTERFACE
+  target. It is linked **PRIVATE** into `msentara_core` so only ProjectIO.cpp
+  pays for the header.
+- **`.msentara` format** (`src/core/ProjectIO.{hpp,cpp}`): versioned JSON,
+  `format:"msentara-project"`, `version:1`. Stores model/motion *paths* plus
+  timeline/camera/ik + name-keyed morph weights and bone deltas (only
+  non-default ones). `project_to_json` is deterministic (fixed key order,
+  `dump(2)`) so save→load→save is byte-identical. Wrong `format`/`version` is
+  rejected; a wrong-typed field falls back to its default (never throws).
+  CLI: `--project <p>` (supersedes `--pmx`/`--vmd`) + `MSENTARA_PROJECT`.
+- **Timeline** gained a `loop` flag; `advance()` clamps+stops when loop=false.
+- **Shaders are now backend-portable**: `Renderer.cpp` builds each GLSL
+  program as `kGlslPrologue + <shared body>`; prologue is `#version 410` on
+  desktop and `#version 300 es` + `precision highp {float,int,sampler2D};`
+  under `__EMSCRIPTEN__`. The ES `sampler2D` precision is required (ES has no
+  default for it). Web link flags need `-sMIN/MAX_WEBGL_VERSION=2`.
+- **CI** `.github/workflows/ci.yml`: linux (gcc+clang, Debug, ctest + Xvfb
+  headless smoke), windows (MSVC/Ninja), emscripten (emsdk 3.1.61 → uploads
+  `MSentara.{html,js,wasm}`). Every job configures from scratch, so a broken
+  pin fails CI. Verified locally: fresh configure OK, 10/10 ctest, Emscripten
+  `MSentara.wasm` (wasm magic 00 61 73 6d) builds clean.
+- **Container toolchain reset again** this session: re-`pip install --user
+  cmake ninja`; apt needs libgl1-mesa-dev/libglx-dev + X11 dev pkgs + xvfb.
+  emsdk 3.1.61 installs to /tmp/emsdk (source emsdk_env.sh). `build/` had a
+  stale cache pointing at a deleted `/tmp/msdeps` override → wipe before
+  reconfigure.
