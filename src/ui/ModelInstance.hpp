@@ -56,6 +56,16 @@ public:
     const Pose& pose() const { return pose_; }
     Pose& pose() { return pose_; }
 
+    // Live morph weights (index-aligned with model().morphs). The UI sliders
+    // and VMD scalar tracks write here; the next update() applies them.
+    MorphSet& morphs() { return model_.morphs; }
+    const MorphSet& morphs() const { return model_.morphs; }
+
+    // Enables or disables CCD-IK for this model, so the user can inspect the
+    // forward-kinematics pose against the solved one.
+    bool ik_enabled() const { return ik_enabled_; }
+    void set_ik_enabled(bool enabled) { ik_enabled_ = enabled; }
+
     // The animation clip currently driving this model, if any. Setting one
     // does not evaluate it; call apply_animation() with the frame to play.
     bool has_animation() const { return has_clip_; }
@@ -72,6 +82,7 @@ public:
 
     // Writes the clip at `frame` into the pose (additively over the rest pose)
     // and re-evaluates the skeleton. Does nothing when no clip is loaded.
+    // Morph scalar tracks in the clip are written into the morph weights.
     void apply_animation(float frame);
 
     const Transform& transform() const { return transform_; }
@@ -100,13 +111,23 @@ public:
 private:
     const GpuTexture& texture_for(const Material& material) const;
 
+    // Recomputes the pose with the full pipeline (keyframes -> bone morphs ->
+    // append -> IK) and gathers the vertex morph offsets for skinning.
+    void evaluate();
+
     Model model_;
     Pose pose_;
     Transform transform_;
     AnimationClip clip_;
     bool has_clip_ = false;
+    bool ik_enabled_ = true;
     int selected_bone_ = -1;
     bool valid_ = false;
+
+    // Vertex morph offsets and the bone morph offsets for the current frame.
+    // Rebuilt by evaluate() and consumed by update().
+    std::vector<vec3> vertex_offsets_;
+    std::vector<BoneMorphOffset> bone_offsets_;
 
     GpuIndexBuffer indices_;
     GpuDynamicMesh vertices_;

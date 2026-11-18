@@ -70,6 +70,62 @@ re-guessed:
   (conjugate by `diag(1, 1, -1)`, which stays a proper rotation). A rotation
   about Z is unchanged by that mirror, which is a good sanity check.
 
+### PMX bones: append/grant and CCD-IK
+
+The bone section is where the two hard parts of the rig live. After the tail
+(the flags decide whether it is a `vec3` or a bone index), the sections
+appear **only when their flag bit is set**, in this order:
+
+| flag (u16) | bit | extra data |
+| --- | --- | --- |
+| `kBoneTailIsIndex` | `0x0001` | tail is a bone index, not a `vec3` |
+| `kBoneIk` | `0x0020` | IK block (below) |
+| `kBoneInheritRotation` | `0x0100` | append/grant parent index + weight |
+| `kBoneInheritTranslation` | `0x0200` | (same two fields; rotation and translation share one parent+weight) |
+| `kBoneFixedAxis` | `0x0400` | `vec3` axis |
+| `kBoneLocalAxis` | `0x0800` | two `vec3` (local X, local Z) |
+| `kBoneExternalParent` | `0x2000` | a **4-byte int**, despite being an "index" |
+
+- **Append/Grant** ("inherit"): when either `0x0100` or `0x0200` is set, a bone
+  index and a `float` weight follow. The bone copies that weight of its
+  append-parent's **animated** rotation (slerp from identity) and/or
+  translation. MMD composes `local = T * (ik * animate * append) * S`.
+- **IK block**: `target` (bone index), `loopCount` (u32), `limitRadian`
+  (float, the per-step clamp), `linkCount` (u32), then per link a bone index
+  and a `u8`; when the `u8` is non-zero, two `vec3` limits follow. The limits
+  are **signed radians**, and the Z-mirror negates both bounds (saba does
+  `limit_min = -limit_max_raw`, `limit_max = -limit_min_raw`).
+- **CCD-IK**: for each link (tip-first), rotate it so the effector→link vector
+  lines up with the target→link vector. The axis is `cross(ikDir, targetDir)`
+  so a positive angle turns the effector *toward* the target. The per-step
+  clamp is `limitRadian` (MMD's default is `2*pi`, i.e. no clamp). An
+  angle-limited link is clamped axis-by-axis in Euler XYZ.
+- **The IK rotation lives on the effector *and* on every link**, not only on
+  the bone that owns the solver. MMD gives each node its own `ikRotate`; the
+  evaluation applies `Pose::ik_rotation` on all chain members
+  (`Bone::ik_chain_member`).
+
+### PMX morphs
+
+A morph is `name_local`, `name_universal`, `panel` (u8), `type` (u8), then an
+`i32` offset count and that many offsets. The offset layout depends on the
+type:
+
+| type | name | offset |
+| --- | --- | --- |
+| 0 | Group | morph index + `float` influence |
+| 1 | Vertex | vertex index + `vec3` |
+| 2 | Bone | bone index + `vec3` translation + `vec4` quaternion |
+| 3–7 | UV / UV ext 1–4 | vertex index + `vec4` |
+| 8 | Material | material index + `u8` op + diffuse/specular/shininess/ambient/edgeColor/edgeSize/tex/sphere/toon |
+| 9 | Flip | morph index + `float` (same shape as a group entry) |
+| 10 | Impulse | rigidbody index + `u8` local + two `vec3` |
+
+MSentara evaluates **Vertex, Bone and Group** morphs; the others are skipped
+by their exact byte size so a real file still parses. Group morphs are
+flattened to leaf weights at evaluation time (with a visited set, so a cyclic
+group cannot loop forever).
+
 ## Fetching the sources
 
 ```sh

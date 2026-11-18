@@ -8,7 +8,8 @@ without a display.
 ## Implemented
 
 - **`PmxLoader.{hpp,cpp}`** — PMX 2.0/2.1 model parser (geometry, materials,
-  skeleton, deform weights). Produces `ms::Model`.
+  skeleton, deform weights, **append/grant transforms, CCD-IK chains, and
+  morphs**). Produces `ms::Model`.
 - **`VmdLoader.{hpp,cpp}`** — VMD (Vocaloid Motion Data) parser. Produces
   `ms::AnimationClip` (bone tracks + morph scalar tracks), converting MMD's
   left-handed space into the right-handed space PMX loading produces.
@@ -23,6 +24,7 @@ the layout facts that have already caused bugs here.
 
 ## Planned
 
-- PMX morphs and VMD morph playback driving the skinned mesh.
+- UV / material / flip / impulse morph evaluation (the loader already skips
+  them correctly, so the offsets are parsed but not yet applied).
 - VMD camera / light tracks (the file carries them; the loader currently
   reads only bones and morphs, which is everything the rig needs).

@@ -88,10 +88,13 @@ void load_model(const std::string& path) {
         g_editor.camera().frame(bounds.center, bounds.radius);
     }
     g_editor.set_status("Loaded " + path);
-    std::printf("MSentara: loaded '%s' (%zu vertices, %zu bones, %zu materials)\n",
+    std::printf("MSentara: loaded '%s' (%zu vertices, %zu bones, %zu materials, "
+                "%zu morphs, %zu IK chains)\n",
                 path.c_str(), g_model.model().mesh.vertices.size(),
                 g_model.model().skeleton.size(),
-                g_model.model().materials.size());
+                g_model.model().materials.size(),
+                g_model.model().morphs.size(),
+                g_model.model().skeleton.ik_solvers().size());
 }
 
 // Loads a VMD motion onto the currently loaded model, replacing any previous

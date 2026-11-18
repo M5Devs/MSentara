@@ -118,8 +118,10 @@ def build():
     b.text("")                 # metadata
     b.i32(len(faces) * 3)      # surface count
 
-    # --- Bones: root + child (child at y=1), so posing is visible.
-    b.i32(2)
+    # --- Bones: root + child (child at y=1), plus an IK handle the child
+    # reaches for. The child carries the IK solver (flag 0x0020) with the root
+    # as its one link, so solving moves the cube.
+    b.i32(3)
     b.text("root")
     b.text("")
     b.v3(0.0, 0.0, 0.0)
@@ -128,14 +130,49 @@ def build():
     b.u8(0x00)
     b.u8(0x00)
     b.v3(0.0, 1.0, 0.0)        # tail
+
     b.text("child")
     b.text("")
     b.v3(0.0, 1.0, 0.0)
     b.i8(0)
     b.i32(0)
-    b.u8(0x00)
+    b.u8(0x20)                 # flags low: IK
     b.u8(0x00)
     b.v3(0.0, 2.0, 0.0)        # tail
+    b.i8(2)                    # IK target bone index
+    b.i32(20)                  # iteration count
+    b.f32(0.0)                 # per-step limit angle (0 = none)
+    b.i32(1)                   # link count
+    b.i8(0)                    # link bone: root
+    b.u8(0)                    # link has no angle limits
+
+    b.text("ik_handle")
+    b.text("")
+    b.v3(0.6, 1.6, 0.0)        # a little off-axis, so the chain must bend
+    b.i8(-1)
+    b.i32(0)
+    b.u8(0x00)
+    b.u8(0x00)
+    b.v3(0.6, 2.6, 0.0)        # tail
+
+    # --- Morphs: a vertex morph and a group morph that drives it.
+    b.i32(2)
+
+    b.text("Smile")
+    b.text("")
+    b.u8(1)                    # panel: eyebrow
+    b.u8(1)                    # type: vertex
+    b.i32(1)                   # one offset
+    b.u8(0)                    # vertex 0
+    b.v3(0.0, 1.0, 0.0)        # offset
+
+    b.text("Combo")
+    b.text("")
+    b.u8(1)                    # panel
+    b.u8(0)                    # type: group
+    b.i32(1)
+    b.u8(0)                    # morph index 0
+    b.f32(0.5)
     return bytes(b.b)
 
 

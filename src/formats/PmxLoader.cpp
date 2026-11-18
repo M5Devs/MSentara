@@ -55,6 +55,19 @@ constexpr std::uint16_t kBoneLocalAxis = 0x0800;
 constexpr std::uint16_t kBoneExternalParent = 0x2000;
 constexpr std::uint16_t kBoneIk = 0x0020;
 
+// Morph type ids from the morph section.
+constexpr std::uint8_t kMorphGroup = 0;
+constexpr std::uint8_t kMorphVertex = 1;
+constexpr std::uint8_t kMorphBone = 2;
+constexpr std::uint8_t kMorphUv = 3;
+constexpr std::uint8_t kMorphUvExt1 = 4;
+constexpr std::uint8_t kMorphUvExt2 = 5;
+constexpr std::uint8_t kMorphUvExt3 = 6;
+constexpr std::uint8_t kMorphUvExt4 = 7;
+constexpr std::uint8_t kMorphMaterial = 8;
+constexpr std::uint8_t kMorphFlip = 9;
+constexpr std::uint8_t kMorphImpulse = 10;
+
 // ---------------------------------------------------------------------------
 // Bounds-checked little-endian reader
 //
@@ -325,6 +338,13 @@ struct Globals {
 // front faces, and our pipelines expect counter-clockwise, so the indices can
 // be used unchanged.
 vec3 to_right_handed(const vec3& v) { return vec3(v.x, v.y, -v.z); }
+
+// The same mirror applied to a rotation quaternion (x, y, z, w) is
+// (-x, -y, z, w): conjugating the rotation matrix by diag(1, 1, -1) stays a
+// proper rotation. This matches VmdLoader's mirror_rotation.
+quat rotation_to_right_handed(const quat& q) {
+    return glm::normalize(quat(q.w, -q.x, -q.y, q.z));
+}
 
 bool read_header(Reader& r, Globals& globals, std::string& model_name) {
     std::uint8_t signature[4] = {0, 0, 0, 0};
@@ -683,6 +703,15 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
     }
 
     skeleton.bones().reserve(count);
+
+    // IK solvers are collected as the bones are read, then appended to the
+    // skeleton. Each solver remembers which bone owns it.
+    struct PendingIk {
+        int bone = -1;
+        IkSolver solver;
+    };
+    std::vector<PendingIk> pending_ik;
+
     for (std::size_t i = 0; i < count; ++i) {
         std::string name_local;
         std::string name_universal;
@@ -716,13 +745,16 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
             }
         }
 
+        // Append/Grant ("inherit"): a parent bone index and a weight in [0,1].
+        bool has_append = false;
+        std::int32_t append_parent = -1;
+        float append_weight = 0.0f;
         if ((flags & (kBoneInheritRotation | kBoneInheritTranslation)) != 0) {
-            std::int32_t inherit_parent = -1;
-            float influence = 0.0f;
-            if (!r.index(globals.bone_index_size, true, inherit_parent) ||
-                !r.f32(influence)) {
+            if (!r.index(globals.bone_index_size, true, append_parent) ||
+                !r.f32(append_weight)) {
                 return false;
             }
+            has_append = true;
         }
         if ((flags & kBoneFixedAxis) != 0) {
             vec3 axis;
@@ -744,6 +776,11 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
                 return false;
             }
         }
+
+        // IK: target bone, iteration count, per-step limit angle, and links.
+        // Collected here and turned into a solver after the bone exists.
+        IkSolver ik;
+        bool has_ik = false;
         if ((flags & kBoneIk) != 0) {
             std::int32_t target = -1;
             std::int32_t loop_count = 0;
@@ -754,6 +791,11 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
                 !r.i32(link_count) || link_count < 0) {
                 return false;
             }
+            has_ik = true;
+            ik.target_bone = target;
+            ik.iterations = (loop_count > 0) ? loop_count : 1;
+            ik.limit_angle = limit_radian;
+            ik.links.reserve(static_cast<std::size_t>(link_count));
             for (std::int32_t link = 0; link < link_count; ++link) {
                 std::int32_t link_bone = -1;
                 std::uint8_t has_limits = 0;
@@ -761,13 +803,22 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
                     !r.u8(has_limits)) {
                     return false;
                 }
+                IkLink ik_link;
+                ik_link.bone = link_bone;
                 if (has_limits != 0) {
                     vec3 limit_min;
                     vec3 limit_max;
                     if (!r.vec3f(limit_min) || !r.vec3f(limit_max)) {
                         return false;
                     }
+                    // Limits are signed radians on each local axis, and the
+                    // mirror flips X and Y, so both bounds negate (saba does
+                    // the same in PMXModel).
+                    ik_link.enable_limit = true;
+                    ik_link.limit_min = -limit_max;
+                    ik_link.limit_max = -limit_min;
                 }
+                ik.links.push_back(ik_link);
             }
         }
 
@@ -775,8 +826,195 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
         // guarantees the hierarchy stays acyclic.
         const int parent_index =
             (parent >= 0 && parent < static_cast<std::int32_t>(i)) ? parent : -1;
-        skeleton.add_bone(name_universal.empty() ? name_local : name_universal,
-                          parent_index, to_right_handed(position));
+        const int bone_index = skeleton.add_bone(
+            name_universal.empty() ? name_local : name_universal, parent_index,
+            to_right_handed(position));
+
+        Bone& bone = skeleton.bone(bone_index);
+        bone.deform_depth = layer;
+        if (has_append) {
+            bone.has_append = true;
+            bone.append_parent = append_parent;
+            bone.append_weight = append_weight;
+            bone.append_rotate = (flags & kBoneInheritRotation) != 0;
+            bone.append_translate = (flags & kBoneInheritTranslation) != 0;
+        }
+        if (has_ik) {
+            ik.ik_bone = bone_index;
+            pending_ik.push_back(PendingIk{bone_index, std::move(ik)});
+        }
+    }
+
+    // Materialise the IK solvers and link each to its effector bone. A target
+    // that does not exist would make the solver a no-op, so it is dropped.
+    for (PendingIk& pending : pending_ik) {
+        if (pending.solver.target_bone < 0 ||
+            pending.solver.target_bone >= static_cast<std::int32_t>(count)) {
+            continue;
+        }
+        skeleton.ik_solvers().push_back(std::move(pending.solver));
+        skeleton.bone(pending.bone).ik_solver =
+            static_cast<int>(skeleton.ik_solvers().size()) - 1;
+    }
+    return true;
+}
+
+// Reads the morph section. Vertex, bone and group morphs are stored; every
+// other morph type (UV, material, flip, impulse) is parsed far enough to know
+// its byte size and then skipped, so a real file still parses completely and
+// the reader never misaligns.
+bool read_morphs(Reader& r, const Globals& globals, MorphSet& morphs) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, 12, "morph", count)) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string name_local;
+        std::string name_universal;
+        std::uint8_t panel = 0;
+        std::uint8_t type = 0;
+        std::int32_t offset_count = 0;
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) || !r.u8(panel) ||
+            !r.u8(type) || !r.i32(offset_count) || offset_count < 0) {
+            return false;
+        }
+        const std::size_t n = static_cast<std::size_t>(offset_count);
+
+        MorphTarget target;
+        target.name = name_universal.empty() ? name_local : name_universal;
+
+        switch (type) {
+            case kMorphGroup: {
+                target.kind = MorphTarget::Kind::Group;
+                target.group_refs.reserve(n);
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t ref = -1;
+                    float influence = 0.0f;
+                    if (!r.index(globals.morph_index_size, true, ref) ||
+                        !r.f32(influence)) {
+                        return false;
+                    }
+                    if (ref >= 0) {
+                        target.group_refs.emplace_back(
+                            static_cast<std::uint32_t>(ref), influence);
+                    }
+                }
+                break;
+            }
+            case kMorphVertex: {
+                target.kind = MorphTarget::Kind::Vertex;
+                target.vertex_offsets.reserve(n);
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t vertex = -1;
+                    vec3 offset;
+                    if (!r.index(globals.vertex_index_size, false, vertex) ||
+                        !r.vec3f(offset)) {
+                        return false;
+                    }
+                    VertexMorphOffset v;
+                    v.vertex = static_cast<std::uint32_t>(vertex);
+                    v.offset = to_right_handed(offset);
+                    target.vertex_offsets.push_back(v);
+                }
+                break;
+            }
+            case kMorphBone: {
+                target.kind = MorphTarget::Kind::Bone;
+                target.bone_offsets.reserve(n);
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t bone = -1;
+                    vec3 translation;
+                    vec4 rotation;
+                    if (!r.index(globals.bone_index_size, true, bone) ||
+                        !r.vec3f(translation) || !r.vec4f(rotation)) {
+                        return false;
+                    }
+                    BoneMorphOffset b;
+                    b.bone = static_cast<std::uint32_t>(bone);
+                    b.translation = to_right_handed(translation);
+                    b.rotation = rotation_to_right_handed(
+                        quat(rotation.w, rotation.x, rotation.y, rotation.z));
+                    target.bone_offsets.push_back(b);
+                }
+                break;
+            }
+            case kMorphUv:
+            case kMorphUvExt1:
+            case kMorphUvExt2:
+            case kMorphUvExt3:
+            case kMorphUvExt4: {
+                // vertex index + vec4
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t vertex = -1;
+                    vec4 uv;
+                    if (!r.index(globals.vertex_index_size, false, vertex) ||
+                        !r.vec4f(uv)) {
+                        return false;
+                    }
+                }
+                continue;
+            }
+            case kMorphMaterial: {
+                // material index + op byte + diffuse(4) specular(3)
+                // shininess(1) ambient(3) edgeColor(4) edgeSize(1)
+                // texture(4) sphere(4) toon(4)
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t material = -1;
+                    std::uint8_t op = 0;
+                    vec4 diffuse;
+                    vec3 specular;
+                    float shininess = 0.0f;
+                    vec3 ambient;
+                    vec4 edge_color;
+                    float edge_size = 0.0f;
+                    vec4 tint;
+                    if (!r.index(globals.material_index_size, true, material) ||
+                        !r.u8(op) || !r.vec4f(diffuse) || !r.vec3f(specular) ||
+                        !r.f32(shininess) || !r.vec3f(ambient) ||
+                        !r.vec4f(edge_color) || !r.f32(edge_size) ||
+                        !r.vec4f(tint) || !r.vec4f(tint) || !r.vec4f(tint)) {
+                        return false;
+                    }
+                }
+                continue;
+            }
+            case kMorphFlip: {
+                // morph index + weight (same shape as a group entry)
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t ref = -1;
+                    float influence = 0.0f;
+                    if (!r.index(globals.morph_index_size, true, ref) ||
+                        !r.f32(influence)) {
+                        return false;
+                    }
+                }
+                continue;
+            }
+            case kMorphImpulse: {
+                // rigid body index + local flag + two vec3
+                for (std::size_t k = 0; k < n; ++k) {
+                    std::int32_t body = -1;
+                    std::uint8_t local = 0;
+                    vec3 speed;
+                    vec3 torque;
+                    if (!r.index(globals.rigidbody_index_size, true, body) ||
+                        !r.u8(local) || !r.vec3f(speed) || !r.vec3f(torque)) {
+                        return false;
+                    }
+                }
+                continue;
+            }
+            default:
+                return r.fail("unknown morph type");
+        }
+
+        morphs.add(std::move(target));
     }
     return true;
 }
@@ -824,6 +1062,17 @@ PmxResult parse_pmx(const std::uint8_t* data, std::size_t size) {
         result.error = reader.error();
         return result;
     }
+
+    // Between the bone section and the morph section PMX stores the display
+    // frames, and after the morph section it stores rigid bodies, joints and
+    // (in 2.1) soft bodies. None of those affect geometry or animation yet, so
+    // the reader stops after the morphs; the model is complete for rendering
+    // and motion.
+    if (!read_morphs(reader, globals, model.morphs)) {
+        result.error = reader.error();
+        return result;
+    }
+
     model.skeleton.compute_rest();
 
     result.ok = true;

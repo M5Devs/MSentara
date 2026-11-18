@@ -93,6 +93,7 @@ private:
     void draw_viewport_panel(const RenderTarget& viewport);
     void draw_outliner_panel();
     void draw_properties_panel();
+    void draw_morphs_panel();
     void draw_timeline_panel();
     void draw_model_tree();
     void draw_bone_properties();

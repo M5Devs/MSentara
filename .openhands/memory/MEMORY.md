@@ -33,6 +33,48 @@ playback) complete: `--vmd` CLI + File>Import VMD + functional timeline,
   `child` bones so `--pmx … --vmd …` animates headlessly. Env vars:
   `MSENTARA_PMX`, `MSENTARA_VMD`, `MSENTARA_FRAME_LIMIT`.
 
+## Milestone 3 — morphs, append transforms, IK (src/core/Morph, Skeleton, PmxLoader)
+
+- **`Morph.hpp/.cpp`**: `MorphTarget{kind, vertex_offsets, uv_offsets,
+  bone_offsets, material_offsets, group_refs}`; `MorphSet` with
+  `add/find/target/size/weights/reset_weights/set_weight`. Group morphs are
+  flattened to leaf weights by `resolved_weights()` with a **visited set**
+  (cyclic groups cannot loop forever). `accumulate_offsets()` builds the
+  per-vertex `vec3` list + `BoneMorphOffset` list. `IkTypes.hpp` holds
+  `IkLink`/`IkSolver`.
+- **Evaluation order** (`Skeleton.cpp`): morph offsets -> append/grant
+  (parent's *animated* rotation slerped from identity by weight; translation
+  scaled) -> CCD-IK. `evaluate_pose_full(skeleton, pose, bone_morphs, ik_on)`
+  is the entry point; `skin_mesh(mesh, pose)` and
+  `skin_mesh(mesh, pose, vertex_offsets)` both exist.
+- **IK axis bug (the one that ate the afternoon)**: the per-link rotation
+  must be `cross(ikDir, targetDir)` with angle `acos(dot)`. `cross(targetDir,
+  ikDir)` rotates *away* from the target — the solver then converges to a
+  mirror pose. Verified with a tiny glm probe: `angleAxis(90°, +Z)` maps
+  `+X -> +Y`, i.e. `cross(from,to)`.
+- **IK rotation applies to the effector AND every link**, not just the bone
+  owning the solver. `Bone::ik_chain_member` is set in `compute_rest()` and
+  gates where `Pose::ik_rotation` is applied. Missing this made IK a no-op on
+  the link bones (the effector moved, the chain did not).
+- **PMX bone flag bits** (the loader reads these in order, only when set):
+  `0x0001` tail-is-index, `0x0020` IK, `0x0100` inherit-rotation, `0x0200`
+  inherit-translation (both share ONE parent+weight), `0x0400` fixed axis,
+  `0x0800` local axes, `0x2000` external-parent (**4-byte int**, not an
+  index-width value). IK block = target, `u32` loop, `float` limit, `u32`
+  link count, then per link `bone + u8 [+ 2 vec3 limits]`. IK limits are
+  **signed radians**; the Z-mirror negates both bounds.
+- **PMX morph section** comes after bones. Morph = local name, universal
+  name, `u8` panel, `u8` type, `i32` count, offsets. Types 0=Group, 1=Vertex,
+  2=Bone (index + vec3 translation + vec4 quat), 3–7=UV, 8=Material (big),
+  9=Flip (same shape as Group), 10=Impulse. MSentara applies 0/1/2 and skips
+  the rest **by exact byte size** so real files still parse.
+- **`scripts/make_test_pmx.py` / `make_test_vmd.py`** now emit the IK block,
+  morphs, and a VMD morph track; the headless run reports
+  `N morphs, M IK chains`. Tests: `tests/test_pmx.cpp` gained `test_morphs`;
+  new `tests/test_ik_morph.cpp` covers IK reach/disable/limit, append
+  rotate+translate, bone morph, vertex morph. 9/9 ctest green, gcc ASan+UBSan
+  clean. (No clang/MinGW/emcc in this container — only gcc available.)
+
 ## Build memory limit — READ THIS FIRST
 
 The container is killed by OOM during parallel C++ compilation. **Always
@@ -45,6 +87,13 @@ The toolchain does **not** persist across container resets: `pip install
 --user cmake ninja` and `sudo apt-get install -y libgl1-mesa-dev libglx-dev
 libx11-dev libxcursor-dev libxi-dev libxext-dev libxrandr-dev libxinerama-dev
 xvfb x11-utils imagemagick` must be re-run. `/workspace` persists.
+
+**FetchContent cannot shallow-fetch the pinned sokol SHA.** A fresh configure
+fails with `fatal: unable to read tree (f5e88334…)` because the pinned commit
+is not on a branch tip. Fix: pre-clone the deps once to a cache outside
+`build/` and pass `-DFETCHCONTENT_SOURCE_DIR_{SOKOL,IMGUI,IMGUIZMO,GLM,STB}=…`
+(see the daily log for the exact clone/checkout list). Never `rm -rf build`
+without those overrides or the whole configure dies.
 
 ## Layout & the one hard dependency rule
 

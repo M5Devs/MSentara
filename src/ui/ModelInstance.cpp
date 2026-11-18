@@ -69,7 +69,7 @@ bool ModelInstance::load(const std::string& path, Renderer& renderer,
         static_cast<int>(model_.mesh.vertices.size()));
 
     pose_.resize(model_.skeleton.size());
-    evaluate_pose(model_.skeleton, pose_);
+    evaluate();
     selected_bone_ = model_.skeleton.empty() ? -1 : 0;
 
     valid_ = indices_.valid() && vertices_.valid();
@@ -93,8 +93,20 @@ void ModelInstance::clear(Renderer& renderer) {
     transform_ = Transform{};
     clip_ = AnimationClip{};
     has_clip_ = false;
+    ik_enabled_ = true;
     selected_bone_ = -1;
+    vertex_offsets_.clear();
+    bone_offsets_.clear();
     valid_ = false;
+}
+
+void ModelInstance::evaluate() {
+    // Gather the offsets the active morphs contribute. Vertex offsets move the
+    // mesh before skinning; bone offsets are folded in by evaluate_pose_full.
+    model_.morphs.accumulate_offsets(model_.mesh.vertices.size(),
+                                     model_.skeleton.size(), vertex_offsets_,
+                                     bone_offsets_);
+    evaluate_pose_full(model_.skeleton, pose_, bone_offsets_, ik_enabled_);
 }
 
 void ModelInstance::apply_animation(float frame) {
@@ -102,15 +114,25 @@ void ModelInstance::apply_animation(float frame) {
         return;
     }
     apply_clip(model_.skeleton, clip_, frame, pose_);
-    evaluate_pose(model_.skeleton, pose_);
+
+    // Morph tracks in the clip drive the matching morph weights. A morph with
+    // no track keeps whatever the user set, so a slider is not stomped.
+    MorphSet& morphs = model_.morphs;
+    for (const ScalarTrack& track : clip_.scalar_tracks) {
+        const int index = morphs.find(track.name);
+        if (index >= 0) {
+            morphs.set_weight(index, track.sample(frame));
+        }
+    }
+    evaluate();
 }
 
 void ModelInstance::update(Renderer& renderer) {
     if (!valid_) {
         return;
     }
-    evaluate_pose(model_.skeleton, pose_);
-    const MeshData skinned = skin_mesh(model_.mesh, pose_);
+    evaluate();
+    const MeshData skinned = skin_mesh(model_.mesh, pose_, vertex_offsets_);
     renderer.upload_vertices(vertices_, skinned.vertices);
 }
 
@@ -156,7 +178,7 @@ void ModelInstance::set_bone_global(int bone, const mat4& new_global) {
 
     // Children read this bone's global, so the whole chain must be refreshed
     // before the next skinning pass.
-    evaluate_pose(model_.skeleton, pose_);
+    evaluate();
 }
 
 }  // namespace ms

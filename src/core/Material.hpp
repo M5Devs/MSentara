@@ -22,6 +22,7 @@
 
 #include "core/Math.hpp"
 #include "core/Mesh.hpp"
+#include "core/Morph.hpp"
 #include "core/Skeleton.hpp"
 
 namespace ms {
@@ -81,6 +82,10 @@ struct Model {
     // One skeleton per model keeps the common case simple; a model with no
     // rig leaves this empty and every vertex is drawn rigid.
     Skeleton skeleton;
+
+    // Blend shapes (facial expressions, etc.). The definitions come from the
+    // file; the live weights are driven by a VMD scalar track or the UI.
+    MorphSet morphs;
 
     bool skinned() const { return !skeleton.empty(); }
 };

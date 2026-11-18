@@ -74,6 +74,14 @@ def quat_axis_angle(axis, degrees):
     return (axis[0] * s, axis[1] * s, axis[2] * s, math.cos(half))
 
 
+def morph_key(name, frame, weight):
+    """A VMD morph keyframe: a 15-byte name, a frame, and a weight."""
+    data = fixed(name, 15)
+    data += u32(frame)
+    data += f32(weight)
+    return data
+
+
 def build():
     # Header: "Vocaloid Motion Data 0002" is 25 bytes in a 30-byte field,
     # followed by a 20-byte model name.
@@ -97,8 +105,15 @@ def build():
     for k in keys:
         out += k
 
-    # No morph keyframes.
-    out += u32(0)
+    # Morph keyframes: drive the synthetic "Combo" morph from 0 to 1 and back,
+    # so the headless run exercises the scalar-track -> morph-weight path.
+    morphs = []
+    morphs.append(morph_key("Combo", 0, 0.0))
+    morphs.append(morph_key("Combo", 15, 1.0))
+    morphs.append(morph_key("Combo", 30, 0.0))
+    out += u32(len(morphs))
+    for m in morphs:
+        out += m
     return out
 
 

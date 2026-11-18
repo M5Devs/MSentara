@@ -36,6 +36,7 @@ namespace {
 constexpr const char* kViewportWindow = "3D Viewport";
 constexpr const char* kOutlinerWindow = "Outliner";
 constexpr const char* kPropertiesWindow = "Properties";
+constexpr const char* kMorphsWindow = "Morphs";
 constexpr const char* kTimelineWindow = "Timeline";
 
 // The default docking layout: viewport on the left, outliner top-right,
@@ -110,10 +111,16 @@ void Editor::draw(const RenderTarget& viewport) {
         ImGuiID right = 0;
         ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.72f, &left,
                                     &right);
-        ImGuiID bottom = 0;
+        // The right column holds the Outliner (top), Morphs (middle) and
+        // Properties (bottom).
+        ImGuiID right_lower = 0;
         ImGuiID top_right = 0;
-        ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.5f, &bottom,
+        ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.5f, &right_lower,
                                     &top_right);
+        ImGuiID morphs_slot = 0;
+        ImGuiID properties_slot = 0;
+        ImGui::DockBuilderSplitNode(right_lower, ImGuiDir_Down, 0.5f,
+                                    &properties_slot, &morphs_slot);
 
         ImGuiID centre = 0;
         ImGuiID timeline_slot = 0;
@@ -122,7 +129,8 @@ void Editor::draw(const RenderTarget& viewport) {
 
         ImGui::DockBuilderDockWindow(kViewportWindow, centre);
         ImGui::DockBuilderDockWindow(kOutlinerWindow, top_right);
-        ImGui::DockBuilderDockWindow(kPropertiesWindow, bottom);
+        ImGui::DockBuilderDockWindow(kMorphsWindow, morphs_slot);
+        ImGui::DockBuilderDockWindow(kPropertiesWindow, properties_slot);
         ImGui::DockBuilderDockWindow(kTimelineWindow, timeline_slot);
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -132,6 +140,7 @@ void Editor::draw(const RenderTarget& viewport) {
 
     draw_viewport_panel(viewport);
     draw_outliner_panel();
+    draw_morphs_panel();
     draw_properties_panel();
     draw_timeline_panel();
 
@@ -409,6 +418,19 @@ void Editor::draw_bone_properties() {
                         b.parent >= 0
                             ? m->model().skeleton.bone(b.parent).name.c_str()
                             : "(root)");
+
+    // IK solving can be toggled so the user can compare the solved pose against
+    // the plain forward-kinematics one. Only shown when the rig actually has a
+    // solver.
+    if (!m->model().skeleton.ik_solvers().empty()) {
+        bool ik = m->ik_enabled();
+        if (ImGui::Checkbox("Solve IK", &ik)) {
+            m->set_ik_enabled(ik);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu chains)",
+                            m->model().skeleton.ik_solvers().size());
+    }
     ImGui::Separator();
 
     // Editing the pose delta is the authored value: a rotation here pivots
@@ -431,6 +453,57 @@ void Editor::draw_bone_properties() {
     ImGui::Spacing();
     ImGui::TextDisabled("World position: %.3f, %.3f, %.3f", world_position.x,
                         world_position.y, world_position.z);
+}
+
+// Lists every morph the model defines, grouped by kind, each with a slider.
+// A slider edit writes straight into the live morph weights, so the mesh
+// updates on the next frame. VMD morph tracks (scalar tracks) write the same
+// weights during playback, and a manual edit simply overrides until the next
+// keyframe.
+void Editor::draw_morphs_panel() {
+    ImGui::Begin(kMorphsWindow);
+
+    if (model_ == nullptr || !model_->valid()) {
+        ImGui::TextDisabled("No model loaded");
+        ImGui::End();
+        return;
+    }
+
+    MorphSet& morphs = model_->morphs();
+    if (morphs.empty()) {
+        ImGui::TextDisabled("This model has no morphs");
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::Button("Reset All")) {
+        morphs.reset_weights();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu morphs", morphs.size());
+    ImGui::Separator();
+
+    std::vector<float>& weights = morphs.weights();
+    for (std::size_t i = 0; i < morphs.size(); ++i) {
+        const MorphTarget& target = morphs.target(i);
+        const char* kind = "Vertex";
+        switch (target.kind) {
+            case MorphTarget::Kind::Vertex: kind = "Vertex"; break;
+            case MorphTarget::Kind::Bone:   kind = "Bone";   break;
+            case MorphTarget::Kind::Group:  kind = "Group";  break;
+        }
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::TextUnformatted(target.name.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", kind);
+        ImGui::SetNextItemWidth(-1.0f);
+        // Clamped to [0, 1]: that is the range MMD morph weights use, and the
+        // range the evaluation expects.
+        ImGui::SliderFloat("##weight", &weights[i], 0.0f, 1.0f, "%.3f");
+        ImGui::PopID();
+    }
+
+    ImGui::End();
 }
 
 void Editor::draw_properties_panel() {

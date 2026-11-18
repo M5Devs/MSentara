@@ -279,6 +279,27 @@ void build_model(PmxBuilder& b, bool utf16) {
     b.u8(0x00);
     b.u8(0x00);
     b.vec3f(vec3(0.0f, 2.0f, 0.0f));  // tail
+
+    // --- Morphs ---
+    // Two morphs: "Smile" moves vertex 4 up in model space, and "Combo" is a
+    // group that drives "Smile" at half strength.
+    b.i32(2);
+
+    text("Smile");
+    text("");
+    b.u8(1);   // panel: eyebrow
+    b.u8(1);   // type: vertex
+    b.i32(1);  // one offset
+    b.u8(4);   // vertex index (1-byte, unsigned)
+    b.vec3f(vec3(0.0f, 2.0f, 0.0f));  // offset (z mirrors to 0)
+
+    text("Combo");
+    text("");
+    b.u8(1);   // panel
+    b.u8(0);   // type: group
+    b.i32(1);  // one reference
+    b.u8(0);   // morph index 0 (1-byte, signed)
+    b.f32(0.5f);
 }
 
 void test_header_and_vertices() {
@@ -448,6 +469,54 @@ void test_skin_pose_math() {
     MS_CHECK(ms::test::nearly(before, after, 1e-3f));
 }
 
+void test_morphs() {
+    PmxBuilder b;
+    build_model(b, true);
+    const PmxResult result = parse_pmx(b.data(), b.size());
+    MS_CHECK(result.ok);
+    if (!result.ok) {
+        return;
+    }
+
+    const MorphSet& morphs = result.model.morphs;
+    MS_CHECK(morphs.size() == 2);
+    MS_CHECK(morphs.find("Smile") == 0);
+    MS_CHECK(morphs.find("Combo") == 1);
+    MS_CHECK(morphs.find("nope") == -1);
+
+    // Vertex morph: one offset, targeting vertex 4, moved +2 in Y. Z is
+    // mirrored, but the offset has no Z component here.
+    const MorphTarget& smile = morphs.target(0);
+    MS_CHECK(smile.kind == MorphTarget::Kind::Vertex);
+    MS_CHECK(smile.vertex_offsets.size() == 1);
+    MS_CHECK(smile.vertex_offsets[0].vertex == 4u);
+    MS_CHECK_NEAR(smile.vertex_offsets[0].offset, vec3(0.0f, 2.0f, 0.0f));
+
+    // Group morph: references "Smile" at half strength.
+    const MorphTarget& combo = morphs.target(1);
+    MS_CHECK(combo.kind == MorphTarget::Kind::Group);
+    MS_CHECK(combo.group_refs.size() == 1);
+    MS_CHECK(combo.group_refs[0].first == 0u);
+    MS_CHECK_NEAR(combo.group_refs[0].second, 0.5f);
+
+    // Driving the group at full strength resolves to half a "Smile".
+    MorphSet live = morphs;
+    live.set_weight(1, 1.0f);
+    const std::vector<float> resolved = live.resolved_weights();
+    MS_CHECK(resolved.size() == 2);
+    MS_CHECK_NEAR(resolved[0], 0.5f);
+
+    // accumulate_offsets turns that into a per-vertex offset on vertex 4.
+    std::vector<vec3> vertex_offsets;
+    std::vector<BoneMorphOffset> bone_offsets;
+    live.accumulate_offsets(result.model.mesh.vertices.size(),
+                            result.model.skeleton.size(), vertex_offsets,
+                            bone_offsets);
+    MS_CHECK(vertex_offsets.size() == result.model.mesh.vertices.size());
+    MS_CHECK_NEAR(vertex_offsets[4], vec3(0.0f, 1.0f, 0.0f));
+    MS_CHECK(bone_offsets.empty());
+}
+
 void test_utf8_encoding() {
     PmxBuilder b;
     build_model(b, false);  // encoding = UTF-8
@@ -495,6 +564,7 @@ int main() {
     test_materials_and_textures();
     test_bones_and_hierarchy();
     test_skin_pose_math();
+    test_morphs();
     test_utf8_encoding();
     test_error_handling();
     return ms::test::summary("pmx");

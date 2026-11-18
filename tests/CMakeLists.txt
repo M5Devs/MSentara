@@ -19,6 +19,7 @@
 
 set(MSENTARA_CORE_TESTS
     test_camera
+    test_ik_morph
     test_mesh
     test_scene
     test_skeleton
