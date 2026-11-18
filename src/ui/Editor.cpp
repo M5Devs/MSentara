@@ -162,6 +162,17 @@ void Editor::draw_main_menu_bar() {
             }
         }
         ImGui::Separator();
+        ImGui::TextUnformatted("Import VMD");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool vmd_submitted = ImGui::InputText(
+            "##vmd_path", vmd_path_buffer_, sizeof(vmd_path_buffer_),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Load VMD") || vmd_submitted) {
+            if (vmd_path_buffer_[0] != '\0') {
+                request_load_vmd(vmd_path_buffer_);
+            }
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
             sapp_request_quit();
         }
@@ -495,13 +506,17 @@ void Editor::draw_timeline_panel() {
     ImGui::Begin(kTimelineWindow);
 
     // Transport controls, in Blender's order: jump-to-start, previous, play,
-    // next, jump-to-end.
+    // next, jump-to-end. Any change here flags the timeline so the app
+    // re-applies the animation clip before the next skinning pass.
     if (ImGui::Button("|<")) {
         timeline_.set_frame(static_cast<float>(timeline_.frame_start));
+        timeline_changed_ = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("<")) {
+        timeline_.playing = false;
         timeline_.step(-1);
+        timeline_changed_ = true;
     }
     ImGui::SameLine();
     if (ImGui::Button(timeline_.playing ? "Pause" : "Play")) {
@@ -509,11 +524,20 @@ void Editor::draw_timeline_panel() {
     }
     ImGui::SameLine();
     if (ImGui::Button(">")) {
+        timeline_.playing = false;
         timeline_.step(1);
+        timeline_changed_ = true;
     }
     ImGui::SameLine();
     if (ImGui::Button(">|")) {
         timeline_.set_frame(static_cast<float>(timeline_.frame_end));
+        timeline_changed_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+        timeline_.playing = false;
+        timeline_.set_frame(static_cast<float>(timeline_.frame_start));
+        timeline_changed_ = true;
     }
 
     ImGui::SameLine();
@@ -537,11 +561,17 @@ void Editor::draw_timeline_panel() {
                            "Frame %.0f")) {
         timeline_.playing = false;
         timeline_.set_frame(frame);
+        timeline_changed_ = true;
     }
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80.0f);
     ImGui::DragFloat("##fps", &timeline_.fps, 0.5f, 1.0f, 240.0f, "%.0f fps");
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("| %d frames  (%.2fs @ %.0f fps)",
+                        timeline_.frame_end - timeline_.frame_start,
+                        timeline_.duration_seconds(), timeline_.fps);
 
     ImGui::Separator();
 
@@ -576,8 +606,38 @@ void Editor::draw_timeline_panel() {
                              px_per_frame;
         dl->AddLine(ImVec2(hx, ruler_origin.y), ImVec2(hx, ruler_origin.y + ruler_size.y),
                     IM_COL32(90, 170, 255, 255), 2.0f);
+
+        // Keyframe ticks for the loaded motion, drawn on a second row so they
+        // read as a dope sheet rather than competing with the ruler.
+        if (model_ != nullptr && model_->has_animation()) {
+            const AnimationClip& clip = model_->clip();
+            for (const BoneTrack& track : clip.bone_tracks) {
+                for (const BoneKey& key : track.keys) {
+                    const float x =
+                        ruler_origin.x +
+                        static_cast<float>(key.frame - timeline_.frame_start) *
+                            px_per_frame;
+                    if (x < ruler_origin.x ||
+                        x > ruler_origin.x + ruler_size.x) {
+                        continue;
+                    }
+                    dl->AddLine(
+                        ImVec2(x, ruler_origin.y + 4.0f),
+                        ImVec2(x, ruler_origin.y + 4.0f + 14.0f),
+                        IM_COL32(240, 200, 90, 200));
+                }
+            }
+        }
     }
     ImGui::Dummy(ruler_size);
+
+    if (model_ != nullptr && model_->has_animation()) {
+        ImGui::TextDisabled("Motion: %zu bone tracks, %zu scalar tracks",
+                            model_->clip().bone_tracks.size(),
+                            model_->clip().scalar_tracks.size());
+    } else {
+        ImGui::TextDisabled("No motion loaded (File > Import VMD)");
+    }
 
     if (!status_.empty()) {
         ImGui::Separator();

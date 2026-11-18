@@ -71,4 +71,18 @@ Transform Transform::from_matrix(const mat4& m) {
     return t;
 }
 
+vec3 quat_to_euler_degrees(const quat& q) {
+    // Reuse the matrix path so the Euler convention (R = Rx * Ry * Rz) has
+    // exactly one definition. The result feeds Transform::matrix() back to the
+    // same rotation.
+    Transform t = Transform::from_matrix(glm::mat4_cast(glm::normalize(q)));
+    return t.rotation;
+}
+
+quat euler_degrees_to_quat(const vec3& euler_degrees) {
+    Transform t;
+    t.rotation = euler_degrees;
+    return glm::quat_cast(t.matrix());
+}
+
 }  // namespace ms

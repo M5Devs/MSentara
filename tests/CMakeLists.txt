@@ -56,3 +56,17 @@ set_tests_properties(test_pmx PROPERTIES
     LABELS "formats"
     TIMEOUT 60
 )
+
+add_executable(test_vmd test_vmd.cpp)
+target_include_directories(test_vmd PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_link_libraries(test_vmd PRIVATE msentara_formats)
+msentara_set_warnings(test_vmd)
+
+add_test(NAME test_vmd COMMAND test_vmd)
+set_tests_properties(test_vmd PROPERTIES
+    LABELS "formats"
+    TIMEOUT 60
+)

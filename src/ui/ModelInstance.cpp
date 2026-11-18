@@ -91,8 +91,18 @@ void ModelInstance::clear(Renderer& renderer) {
     model_ = Model{};
     pose_ = Pose{};
     transform_ = Transform{};
+    clip_ = AnimationClip{};
+    has_clip_ = false;
     selected_bone_ = -1;
     valid_ = false;
+}
+
+void ModelInstance::apply_animation(float frame) {
+    if (!valid_ || !has_clip_) {
+        return;
+    }
+    apply_clip(model_.skeleton, clip_, frame, pose_);
+    evaluate_pose(model_.skeleton, pose_);
 }
 
 void ModelInstance::update(Renderer& renderer) {

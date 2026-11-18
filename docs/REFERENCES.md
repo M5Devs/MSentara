@@ -47,6 +47,29 @@ re-guessed:
 - **Text** is a 4-byte signed length followed by that many bytes, UTF-16LE or
   UTF-8 per the encoding global.
 
+### VMD specifics
+
+- **Header** is `"Vocaloid Motion Data 0002"` in a 30-byte field, followed by
+  a 20-byte Shift-JIS model name. The pre-`0002` variant
+  (`"Vocaloid Motion Data file"`) uses a 10-byte model name.
+- **A bone keyframe is 111 bytes**: `name[15]` (Shift-JIS, NUL-padded),
+  `u32 frame`, `vec3 position`, `quat rotation` (stored **x, y, z, w**),
+  then a **64-byte interpolation block**.
+- **The interpolation block is four identical 16-byte copies** of the same
+  values. Within a copy, byte `(control * 4 + channel)` holds that control,
+  where control is `0=x0, 1=y0, 2=x1, 3=y1` and channel is
+  `0=X, 1=Y, 2=Z, 3=rotation`. So the X-axis Bezier is built from bytes
+  `0, 4, 8, 12`; the rotation curve from `3, 7, 11, 15`. Control points are
+  the byte divided by 127. The four rows are interleaved by channel, **not**
+  stored as four sequential 4-byte curves — reading it the latter way
+  silently swaps X/Y/Z/rotation curves.
+- **A morph keyframe is 23 bytes**: `name[15]`, `u32 frame`, `float weight`.
+- **VMD is left-handed** (Y-up, Z-forward); PMX loading mirrors Z to reach
+  the right-handed space MSentara renders in. The matching transform for a
+  motion is translation `(x, y, -z)` and quaternion `(-x, -y, z, w)`
+  (conjugate by `diag(1, 1, -1)`, which stays a proper rotation). A rotation
+  about Z is unchanged by that mirror, which is a good sanity check.
+
 ## Fetching the sources
 
 ```sh

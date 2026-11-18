@@ -19,7 +19,9 @@
 #include <cstring>
 #include <string>
 
+#include "core/Animation.hpp"
 #include "core/Mesh.hpp"
+#include "formats/VmdLoader.hpp"
 #include "platform/Renderer.hpp"
 #include "platform/SokolConfig.hpp"
 #include "sokol_app.h"
@@ -51,6 +53,10 @@ int g_frame_count = 0;
 // A PMX path supplied on the command line (--pmx <path>). sokol_main runs
 // before the GL context exists, so the load itself is deferred to init_cb.
 std::string g_pmx_path;
+
+// A VMD path supplied on the command line (--vmd <path>). Loaded after the
+// model, in init_cb, so the motion is applied to a rig that already exists.
+std::string g_vmd_path;
 
 // Optional frame limit, used by the headless smoke test to exit on its own.
 // Unset (or 0) means "run until the user quits".
@@ -88,6 +94,47 @@ void load_model(const std::string& path) {
                 g_model.model().materials.size());
 }
 
+// Loads a VMD motion onto the currently loaded model, replacing any previous
+// clip, and resizes the timeline to the motion's frame range.
+void load_motion(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    if (!g_model.valid()) {
+        g_editor.set_status("Load a PMX model before a VMD motion");
+        std::fprintf(stderr, "MSentara: cannot load VMD '%s' without a model\n",
+                     path.c_str());
+        return;
+    }
+
+    VmdResult result = load_vmd(path);
+    if (!result.ok) {
+        g_editor.set_status("Failed to load VMD " + path + ": " + result.error);
+        std::fprintf(stderr, "MSentara: failed to load VMD '%s': %s\n",
+                     path.c_str(), result.error.c_str());
+        return;
+    }
+
+    const int end = result.clip.frame_end();
+    result.clip.name = path;
+    const std::size_t bone_tracks = result.clip.bone_tracks.size();
+    const std::size_t scalar_tracks = result.clip.scalar_tracks.size();
+    g_model.set_clip(std::move(result.clip));
+
+    // The timeline drives the motion; start at frame 0 and span the clip.
+    Timeline& timeline = g_editor.timeline();
+    timeline.frame_start = 0;
+    timeline.frame_end = (end > 0) ? end : 1;
+    timeline.fps = 30.0f;
+    timeline.set_frame(0.0f);
+    g_model.apply_animation(timeline.current_frame);
+
+    g_editor.set_status("Loaded VMD " + path);
+    std::printf("MSentara: loaded VMD '%s' (%zu bone tracks, %zu scalar tracks, "
+                "%d frames)\n",
+                path.c_str(), bone_tracks, scalar_tracks, end);
+}
+
 void init_cb() {
     g_renderer.setup();
     simgui_desc_t simgui_desc = {};
@@ -123,6 +170,17 @@ void init_cb() {
     if (!pmx.empty()) {
         load_model(pmx);
     }
+
+    // A motion needs a model, so it is loaded after (and only after) one.
+    std::string vmd = g_vmd_path;
+    if (vmd.empty()) {
+        if (const char* env = std::getenv("MSENTARA_VMD")) {
+            vmd = env;
+        }
+    }
+    if (!vmd.empty()) {
+        load_motion(vmd);
+    }
 }
 
 void frame_cb() {
@@ -157,6 +215,18 @@ void frame_cb() {
     if (g_editor.has_pending_load()) {
         load_model(g_editor.take_pending_load());
     }
+    if (g_editor.has_pending_vmd_load()) {
+        load_motion(g_editor.take_pending_vmd_load());
+    }
+
+    // Drive the pose from the active clip when the timeline is playing, or
+    // when the transport/scrubber changed the frame. The flag is cleared here
+    // so a scrub set during the previous frame's UI is consumed exactly once.
+    if (g_model.has_animation() &&
+        (g_editor.timeline().playing || g_editor.timeline_changed())) {
+        g_model.apply_animation(g_editor.timeline().current_frame);
+    }
+    g_editor.clear_timeline_changed();
 
     // Re-evaluate the pose and re-upload the skinned vertices for this frame.
     g_model.update(g_renderer);

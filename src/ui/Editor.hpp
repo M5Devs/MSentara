@@ -59,6 +59,24 @@ public:
         return pending_load_;
     }
 
+    // A VMD load requested from the menu or the path field. Kept separate from
+    // the model load because a motion can be loaded onto an already-loaded
+    // model.
+    void request_load_vmd(const std::string& path) {
+        pending_vmd_ = path;
+        has_pending_vmd_ = true;
+    }
+    bool has_pending_vmd_load() const { return has_pending_vmd_; }
+    std::string take_pending_vmd_load() {
+        has_pending_vmd_ = false;
+        return pending_vmd_;
+    }
+
+    // True while a playback transport control (play/pause/reset/scrub) changed
+    // the timeline this frame, so the app can re-apply the animation.
+    bool timeline_changed() const { return timeline_changed_; }
+    void clear_timeline_changed() { timeline_changed_ = false; }
+
     void set_status(const std::string& status) { status_ = status; }
     const std::string& status() const { return status_; }
 
@@ -97,8 +115,12 @@ private:
 
     std::string pending_load_;
     bool has_pending_load_ = false;
+    std::string pending_vmd_;
+    bool has_pending_vmd_ = false;
+    bool timeline_changed_ = false;
     std::string status_;
     char path_buffer_[512] = {};
+    char vmd_path_buffer_[512] = {};
 
     bool show_demo_ = false;
     bool layout_initialised_ = false;

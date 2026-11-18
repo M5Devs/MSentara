@@ -17,8 +17,10 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "core/Animation.hpp"
 #include "core/Material.hpp"
 #include "core/Mesh.hpp"
 #include "core/Skeleton.hpp"
@@ -54,6 +56,24 @@ public:
     const Pose& pose() const { return pose_; }
     Pose& pose() { return pose_; }
 
+    // The animation clip currently driving this model, if any. Setting one
+    // does not evaluate it; call apply_animation() with the frame to play.
+    bool has_animation() const { return has_clip_; }
+    const AnimationClip& clip() const { return clip_; }
+    void set_clip(AnimationClip clip) {
+        clip_ = std::move(clip);
+        has_clip_ = !clip_.empty();
+    }
+    void clear_clip() {
+        clip_ = AnimationClip{};
+        has_clip_ = false;
+    }
+    const std::string& clip_name() const { return clip_.name; }
+
+    // Writes the clip at `frame` into the pose (additively over the rest pose)
+    // and re-evaluates the skeleton. Does nothing when no clip is loaded.
+    void apply_animation(float frame);
+
     const Transform& transform() const { return transform_; }
     Transform& transform() { return transform_; }
     mat4 model_matrix() const { return transform_.matrix(); }
@@ -83,6 +103,8 @@ private:
     Model model_;
     Pose pose_;
     Transform transform_;
+    AnimationClip clip_;
+    bool has_clip_ = false;
     int selected_bone_ = -1;
     bool valid_ = false;
 

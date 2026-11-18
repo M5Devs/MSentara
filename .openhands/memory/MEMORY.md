@@ -4,7 +4,34 @@ Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
 docking + ImGuizmo + glm). Repo root is `MSentara/`; `LICENSE` is GPLv3.
 Milestone 0 (skeleton + viewport) complete. Milestone 1 (PMX loading, skeletal
 skinning, bone posing) complete: parser + skinning + pose + bone-tree UI +
-`--pmx` CLI, 7/7 ctest green. Daily logs hold the detail.
+`--pmx` CLI. Milestone 2 (VMD motion import, Bezier interpolation, timeline
+playback) complete: `--vmd` CLI + File>Import VMD + functional timeline,
+8/8 ctest green. Daily logs hold the detail.
+
+## Milestone 2 — VMD motion (src/core/Animation, src/formats/VmdLoader)
+
+- **VMD layout** (saba-verified; also in `docs/REFERENCES.md`): header
+  `"Vocaloid Motion Data 0002"` (30 B) + 20 B Shift-JIS name (pre-0002 variant:
+  10 B name); bone key = 111 B (`name[15]`, `u32 frame`, `vec3 pos`,
+  `quat x,y,z,w`, 64 B interp); morph key = 23 B.
+- **The 64-byte interp block is FOUR identical 16-byte copies.** Byte
+  `(control*4 + channel)`, control 0..3 = x0,y0,x1,y1, channel 0..3 =
+  X,Y,Z,rot. X-curve = bytes 0,4,8,12; rot = 3,7,11,15; control = byte/127.
+  Do NOT read it as four sequential curves — that silently swaps channels.
+- **Left-handed → right-handed**: translation `(x,y,-z)`, quaternion
+  `(-x,-y,z,w)` (conjugate by diag(1,1,-1)). Rotation about Z is unchanged.
+- `Bezier::ease()` bisects `x(t)=time` (24 iters, 1e-5 tol) then returns
+  `y(t)`. `apply_clip()` matches tracks to bones **by name** and writes the
+  sampled quat into `pose.delta` as Euler degrees (via
+  `quat_to_euler_degrees`, which reuses `Transform::from_matrix`).
+- `ShiftJis.{hpp,cpp}` + generated `SjisTable.hpp` (CP932→UTF-8, no
+  ICU/iconv; regen with `scripts/gen_sjis_table.py`). `SjisTable.hpp` is the
+  only large generated file; `kDoubleByte` is `(key<<16|cp)` sorted for
+  binary search, `kSingleByte[256]` holds ASCII + half-width katakana
+  (lead bytes are 0 so they fall through to the double-byte path).
+- `scripts/make_test_vmd.py` keys a motion to the synthetic PMX's `root`/
+  `child` bones so `--pmx … --vmd …` animates headlessly. Env vars:
+  `MSENTARA_PMX`, `MSENTARA_VMD`, `MSENTARA_FRAME_LIMIT`.
 
 ## Build memory limit — READ THIS FIRST
 

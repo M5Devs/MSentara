@@ -37,4 +37,11 @@ struct Transform {
     static Transform from_matrix(const mat4& m);
 };
 
+// Converts a rotation quaternion into the Euler XYZ degrees that Transform
+// stores, and back. The round trip is exact for any rotation, so an animation
+// sampled as a quaternion (VMD) can be written into a Transform without
+// drifting away from what the property panel would show.
+vec3 quat_to_euler_degrees(const quat& q);
+quat euler_degrees_to_quat(const vec3& euler_degrees);
+
 }  // namespace ms

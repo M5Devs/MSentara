@@ -55,6 +55,7 @@ msentara_fetch_dependencies()
 # Core: rendering-agnostic scene/camera/timeline data structures.
 # ---------------------------------------------------------------------------
 add_library(msentara_core STATIC
+    src/core/Animation.cpp
     src/core/Camera.cpp
     src/core/Mesh.cpp
     src/core/Scene.cpp
@@ -71,6 +72,8 @@ msentara_set_warnings(msentara_core)
 # ---------------------------------------------------------------------------
 add_library(msentara_formats STATIC
     src/formats/PmxLoader.cpp
+    src/formats/ShiftJis.cpp
+    src/formats/VmdLoader.cpp
 )
 target_include_directories(msentara_formats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(msentara_formats PUBLIC msentara_core)
