@@ -2,12 +2,12 @@
 
 Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
 docking + ImGuizmo + glm). Repo root `MSentara/`, GPLv3. Repo remote is
-`M5Devs/MSentara`. Milestones 0–5 complete: skeleton+viewport, PMX loading +
+`M5Devs/MSentara`. Milestones 0–6 complete: skeleton+viewport, PMX loading +
 skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI,
-PMX rigid-body physics (hair/cloth), and VMD camera tracks + offline PNG
-sequence export. **Per-milestone detail lives in the daily
-logs** (e.g. `2026-11-17.md`); this index keeps only durable, cross-cutting
-facts.
+PMX rigid-body physics (hair/cloth), VMD camera tracks + offline PNG
+sequence export, and a 2D cutout animation mode. **Per-milestone detail lives
+in the daily logs** (e.g. `2026-11-17.md`); this index keeps only durable,
+cross-cutting facts.
 
 ## Build memory limit — READ THIS FIRST
 
@@ -117,3 +117,20 @@ offscreen viewport sample an empty texture while the ImGui UI looked fine.
 - Emscripten path builds (`em++` available at `/tmp/emsdk`); shaders must be
   ES3-compatible (`Renderer.cpp` emits a `#version 410` / `#version 300 es`
   prologue; the ES `sampler2D` precision is required).
+- **2D mode reuses the 3D `Camera`** — there is no separate 2D camera type.
+  `projection_matrix_2d()` is an orthographic pixel-space projection where
+  `distance` is the visible half-height (the 2D zoom) and `target.xy` is the
+  pan; the view matrix is identity. Nav in 2D: middle-drag pans, wheel zooms
+  (no orbit). Sprite quads use pixel orientation (y down, origin top-left),
+  so `ImageIO::load_texture_file_2d` must **not** flip rows.
+- **`Scene2D` mirrors `Scene`**: a flat, id-addressed `std::vector` with a
+  `parent` index; `world_matrix()` recurses the parent chain. Like `Scene` it
+  has **no cycle guard**, so a malformed project with an in-range parent cycle
+  would recurse infinitely — keep them consistent if you ever fix one.
+- The 2D gizmo manipulates `Scene2D::pivot_world_matrix()` (origin at the
+  layer's pivot), so translation reads as `position` and rotate/scale act
+  about the pivot — not the image corner.
+- Headless 2D verify: `scripts/make_test_png.py` writes a stdlib-only RGBA PNG
+  (red top / blue bottom, for orientation checks); CI renders it in 2D and
+  asserts the exported frame count (`--export-start/--export-end` make the
+  count deterministic). Export dirs `out-*/` are gitignored.
