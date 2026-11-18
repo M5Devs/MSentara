@@ -5,10 +5,11 @@ open-source animation tool with a Blender-like editing experience, with a
 particular focus on importing and animating **MikuMikuDance (PMX/VMD)**
 assets.
 
-This repository currently contains **Milestones 0–4A**: the project skeleton, a
+This repository currently contains **Milestones 0–4B**: the project skeleton, a
 working GPU viewport, the rendering-agnostic core data model, PMX/VMD import
-with skeletal skinning, morphs, append transforms and CCD-IK, a native
-`.msentara` project format, and cross-platform CI.
+with skeletal skinning, morphs, append transforms, CCD-IK and rigid-body
+physics (hair/cloth), a native `.msentara` project format, and cross-platform
+CI.
 
 ## Features (Milestone 0)
 
@@ -25,6 +26,12 @@ with skeletal skinning, morphs, append transforms and CCD-IK, a native
   Blender (`G`/`R`/`S`) and DCC (`W`/`E`/`R`) shortcut sets.
 - A **rendering-agnostic core** (`src/core`): scene graph, transform,
   camera, timeline, and mesh generation, with unit tests.
+- **PMX rigid-body physics** (`src/core/Physics.hpp`): a small,
+  dependency-free solver for hair, skirts and accessories. It reads PMX rigid
+  bodies and joints, keeps kinematic bodies on their animated bones, integrates
+  dynamic bodies under gravity with damping, links chains with distance
+  constraints, and writes the result back onto the rig (MMD's "physics" and
+  "physics + bone" modes). Toggle it per model from the Properties panel.
 - A native **`.msentara` project format** (versioned JSON) that saves the
   model/motion paths, timeline, camera and manual morph/bone poses. See
   [`docs/PROJECT_FORMAT.md`](docs/PROJECT_FORMAT.md).

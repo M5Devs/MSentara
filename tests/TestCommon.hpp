@@ -74,6 +74,14 @@ inline bool nearly(const mat4& a, const mat4& b, float eps = 1e-4f) {
     return true;
 }
 
+inline bool nearly(const quat& a, const quat& b, float eps = 1e-4f) {
+    // q and -q describe the same rotation, so accept either sign.
+    return (nearly(a.x, b.x, eps) && nearly(a.y, b.y, eps) &&
+            nearly(a.z, b.z, eps) && nearly(a.w, b.w, eps)) ||
+           (nearly(a.x, -b.x, eps) && nearly(a.y, -b.y, eps) &&
+            nearly(a.z, -b.z, eps) && nearly(a.w, -b.w, eps));
+}
+
 }  // namespace ms::test
 
 #define MS_CHECK(expr) ::ms::test::report((expr), #expr, __FILE__, __LINE__)

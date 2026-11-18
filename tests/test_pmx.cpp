@@ -300,6 +300,15 @@ void build_model(PmxBuilder& b, bool utf16) {
     b.i32(1);  // one reference
     b.u8(0);   // morph index 0 (1-byte, signed)
     b.f32(0.5f);
+
+    // Display frames: none. The section is still written, because the parser
+    // walks it to reach the rigid bodies that follow.
+    b.i32(0);
+
+    // Rigid bodies and joints: none for this model. A model with no physics
+    // must still parse, which is the common case for a plain mesh.
+    b.i32(0);
+    b.i32(0);
 }
 
 void test_header_and_vertices() {

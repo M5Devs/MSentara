@@ -126,6 +126,31 @@ by their exact byte size so a real file still parses. Group morphs are
 flattened to leaf weights at evaluation time (with a visited set, so a cyclic
 group cannot loop forever).
 
+### PMX display frames, rigid bodies and joints
+
+The sections after the bones come in this fixed order (2.1 adds soft bodies
+last): **morphs → display frames → rigid bodies → joints**. The display frames
+only describe the UI and are walked and discarded, but they must be walked
+exactly or the rigid-body section is read from the wrong offset.
+
+- **Display frame entry**: `type` (u8) then, for a bone frame (0), a bone
+  index, or for a morph frame (1), a morph index. Nothing else.
+- **Rigid body**: `name_local`, `name_universal`, related bone index, group
+  (u8), non-collision mask (**u16**), shape (u8: 0 sphere, 1 box, 2 capsule),
+  shape size (vec3), shape position (vec3), shape rotation (vec3 **radians**),
+  mass, move attenuation, rotation damping, repulsion, friction (all f32),
+  physics mode (u8: 0 follow-bone, 1 physics, 2 physics+bone).
+- **Joint**: `name_local`, `name_universal`, type (u8), body index A, body
+  index B, position (vec3), rotation (vec3 radians), position min/max (vec3),
+  rotation min/max (vec3), position spring (vec3), rotation spring (vec3).
+  Joint types 1–5 (6DOF, P2P, ConeTwist, Slider, Hinge) are **PMX 2.1**
+  additions; a 2.0 file only ever has type 0 (Spring 6DOF).
+- **Rigid-body and joint positions are model-space, not bone-local.** The body
+  keeps a fixed offset from its bone that is derived at load time; only the Z
+  mirror applies to the position and the rotation. Shape sizes are local
+  extents and are left alone; joint limits are along the joint's own
+  (already mirrored) axes and are kept as written.
+
 ## Fetching the sources
 
 ```sh

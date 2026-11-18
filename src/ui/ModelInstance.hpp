@@ -23,6 +23,7 @@
 #include "core/Animation.hpp"
 #include "core/Material.hpp"
 #include "core/Mesh.hpp"
+#include "core/Physics.hpp"
 #include "core/Skeleton.hpp"
 #include "core/Transform.hpp"
 #include "platform/Renderer.hpp"
@@ -69,6 +70,19 @@ public:
     bool ik_enabled() const { return ik_enabled_; }
     void set_ik_enabled(bool enabled) { ik_enabled_ = enabled; }
 
+    // The rigid-body solver (hair/skirt/cloth). Empty for a model with no
+    // rigid bodies. `physics_enabled` gates whether update() advances it.
+    bool has_physics() const { return !physics_.empty(); }
+    Physics& physics() { return physics_; }
+    const Physics& physics() const { return physics_; }
+
+    bool physics_enabled() const { return physics_.enabled(); }
+    void set_physics_enabled(bool enabled) { physics_.set_enabled(enabled); }
+
+    // Resets the simulation to its rest state (velocities cleared, dynamic
+    // bodies snapped back to the rest pose). Does nothing without physics.
+    void reset_physics();
+
     // The animation clip currently driving this model, if any. Setting one
     // does not evaluate it; call apply_animation() with the frame to play.
     bool has_animation() const { return has_clip_; }
@@ -102,9 +116,10 @@ public:
     const GpuIndexBuffer& indices() const { return indices_; }
     const GpuDynamicMesh& vertices() const { return vertices_; }
 
-    // Re-evaluates the pose, skins the mesh on the CPU and uploads the result
-    // for the current frame. Call once per frame, outside any pass.
-    void update(Renderer& renderer);
+    // Re-evaluates the pose, advances the rigid-body simulation by `dt`
+    // seconds (when physics is enabled), skins the mesh on the CPU and uploads
+    // the result for the current frame. Call once per frame, outside any pass.
+    void update(Renderer& renderer, float dt);
 
     // Draws every material range. Must be called inside a pass, after update().
     void draw(Renderer& renderer, const mat4& view_proj) const;
@@ -132,6 +147,7 @@ private:
     Model model_;
     Pose pose_;
     Transform transform_;
+    Physics physics_;
     AnimationClip clip_;
     bool has_clip_ = false;
     std::string source_path_;

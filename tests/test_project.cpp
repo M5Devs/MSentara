@@ -40,6 +40,7 @@ Project make_sample() {
     p.camera.yaw = -42.0f;
     p.camera.pitch = 17.5f;
     p.ik_enabled = false;
+    p.physics_enabled = false;
     p.morphs = {{"Smile", 0.75f}, {"Blink", 0.25f}};
     p.bones = {
         {"center", vec3(0.0f, 1.0f, 2.0f), vec3(10.0f, 20.0f, 30.0f),
@@ -71,6 +72,7 @@ void test_round_trip_preserves_everything() {
     MS_CHECK(nearly(loaded.camera.yaw, original.camera.yaw));
     MS_CHECK(nearly(loaded.camera.pitch, original.camera.pitch));
     MS_CHECK(loaded.ik_enabled == original.ik_enabled);
+    MS_CHECK(loaded.physics_enabled == original.physics_enabled);
 
     MS_CHECK(loaded.morphs.size() == original.morphs.size());
     if (loaded.morphs.size() == original.morphs.size()) {
@@ -135,6 +137,8 @@ void test_minimal_file_uses_defaults() {
     MS_CHECK(loaded.model_path.empty());
     MS_CHECK(loaded.motion_path.empty());
     MS_CHECK(loaded.ik_enabled);
+    // Absent from the file, so the backward-compatible default (on) applies.
+    MS_CHECK(loaded.physics_enabled);
     MS_CHECK(loaded.loop);
     MS_CHECK(loaded.morphs.empty());
     MS_CHECK(loaded.bones.empty());

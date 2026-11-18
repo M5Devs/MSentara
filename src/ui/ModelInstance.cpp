@@ -73,6 +73,11 @@ bool ModelInstance::load(const std::string& path, Renderer& renderer,
     evaluate();
     selected_bone_ = model_.skeleton.empty() ? -1 : 0;
 
+    // Build the rigid-body solver from the model's bodies and rig. A model
+    // with no rigid bodies leaves it empty, and every physics call is a no-op.
+    physics_.build(model_.rigid_bodies, model_.skeleton);
+    physics_.reset();
+
     valid_ = indices_.valid() && vertices_.valid();
     if (!valid_) {
         error = "failed to allocate GPU buffers for the model";
@@ -92,6 +97,7 @@ void ModelInstance::clear(Renderer& renderer) {
     model_ = Model{};
     pose_ = Pose{};
     transform_ = Transform{};
+    physics_.clear();
     clip_ = AnimationClip{};
     has_clip_ = false;
     source_path_.clear();
@@ -130,13 +136,26 @@ void ModelInstance::apply_animation(float frame) {
     evaluate();
 }
 
-void ModelInstance::update(Renderer& renderer) {
+void ModelInstance::update(Renderer& renderer, float dt) {
     if (!valid_) {
         return;
     }
     evaluate();
+    // Advance the rigid-body simulation *after* the keyframe/IK pose is
+    // evaluated but before skinning, so a hair or skirt strand is skinned from
+    // its simulated position. A disabled or empty solver leaves the pose
+    // exactly as evaluated.
+    physics_.step(model_.skeleton, pose_, dt);
     const MeshData skinned = skin_mesh(model_.mesh, pose_, vertex_offsets_);
     renderer.upload_vertices(vertices_, skinned.vertices);
+}
+
+void ModelInstance::reset_physics() {
+    if (!valid_ || physics_.empty()) {
+        return;
+    }
+    physics_.reset();
+    evaluate();
 }
 
 const GpuTexture& ModelInstance::texture_for(const Material& material) const {

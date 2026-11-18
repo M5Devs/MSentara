@@ -21,6 +21,9 @@ class B:
     def i32(self, v):
         self.b += struct.pack("<i", v)
 
+    def u16(self, v):
+        self.b += struct.pack("<H", v & 0xFFFF)
+
     def f32(self, v):
         self.b += struct.pack("<f", v)
 
@@ -173,6 +176,69 @@ def build():
     b.i32(1)
     b.u8(0)                    # morph index 0
     b.f32(0.5)
+
+    # --- Display frames: one frame with a bone entry, so the parser has a
+    # non-empty section to walk before the rigid bodies.
+    b.i32(1)
+    b.text("Root")
+    b.text("")
+    b.u8(0)                    # not a special frame
+    b.i32(1)                   # one entry
+    b.u8(0)                    # bone frame
+    b.i8(0)                    # bone index 0
+
+    # --- Rigid bodies: a kinematic body on the root and a dynamic body on the
+    # child, joined below. The dynamic body hangs off the kinematic one, so the
+    # smoke run exercises the solver end to end.
+    b.i32(2)
+    # Kinematic anchor on the root bone.
+    b.text("root_body")
+    b.text("")
+    b.i8(0)                    # bone 0
+    b.u8(0)                    # group 0
+    b.u16(0)                   # collision mask
+    b.u8(0)                    # shape: sphere
+    b.v3(0.1, 0.0, 0.0)        # radius
+    b.v3(0.0, 0.0, 0.0)        # position
+    b.v3(0.0, 0.0, 0.0)        # rotation
+    b.f32(0.0)                 # mass
+    b.f32(0.5)                 # move attenuation
+    b.f32(0.5)                 # rotation damping
+    b.f32(0.0)                 # repulsion
+    b.f32(0.5)                 # friction
+    b.u8(0)                    # mode: kinematic
+    # Dynamic body on the child bone.
+    b.text("child_body")
+    b.text("")
+    b.i8(1)                    # bone 1
+    b.u8(1)                    # group 1
+    b.u16(0)                   # collision mask
+    b.u8(2)                    # shape: capsule
+    b.v3(0.1, 0.3, 0.0)        # radius, half length
+    b.v3(0.0, 1.0, 0.0)        # position
+    b.v3(0.0, 0.0, 0.0)        # rotation
+    b.f32(1.0)                 # mass
+    b.f32(0.5)                 # move attenuation
+    b.f32(0.5)                 # rotation damping
+    b.f32(0.1)                 # repulsion
+    b.f32(0.4)                 # friction
+    b.u8(1)                    # mode: dynamic
+
+    # --- Joints: one spring joint hanging the dynamic body off the kinematic.
+    b.i32(1)
+    b.text("child_joint")
+    b.text("")
+    b.u8(0)                    # type: spring 6DOF
+    b.i8(0)                    # body A
+    b.i8(1)                    # body B
+    b.v3(0.0, 0.5, 0.0)        # position
+    b.v3(0.0, 0.0, 0.0)        # rotation
+    b.v3(-0.05, -0.05, -0.05)  # translation min
+    b.v3(0.05, 0.05, 0.05)     # translation max
+    b.v3(-0.5, -0.5, -0.5)     # rotation min
+    b.v3(0.5, 0.5, 0.5)        # rotation max
+    b.v3(1.0, 1.0, 1.0)        # translation spring
+    b.v3(1.0, 1.0, 1.0)        # rotation spring
     return bytes(b.b)
 
 

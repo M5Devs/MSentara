@@ -43,6 +43,11 @@ constexpr int kAttrColor = 2;
 // default precisions (including for sampler2D, which has none in ES fragment
 // shaders). The shader bodies below are shared and only this prefix differs,
 // so there is a single copy of the actual lighting code.
+//
+// 410 (not 330): the shaders use explicit `layout(location=...)` on vertex
+// inputs and fragment outputs, which needs GLSL 4.20 or the
+// GL_ARB_separate_shader_objects extension, so 4.10 is the floor that works
+// everywhere without extra extensions.
 #if defined(__EMSCRIPTEN__)
 constexpr const char* kGlslPrologue =
     "#version 300 es\n"

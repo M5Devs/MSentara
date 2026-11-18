@@ -95,12 +95,14 @@ void load_model(const std::string& path) {
     }
     g_editor.set_status("Loaded " + path);
     std::printf("MSentara: loaded '%s' (%zu vertices, %zu bones, %zu materials, "
-                "%zu morphs, %zu IK chains)\n",
+                "%zu morphs, %zu IK chains, %zu rigid bodies, %zu joints)\n",
                 path.c_str(), g_model.model().mesh.vertices.size(),
                 g_model.model().skeleton.size(),
                 g_model.model().materials.size(),
                 g_model.model().morphs.size(),
-                g_model.model().skeleton.ik_solvers().size());
+                g_model.model().skeleton.ik_solvers().size(),
+                g_model.model().rigid_bodies.bodies.size(),
+                g_model.model().rigid_bodies.joints.size());
 }
 
 // Loads a VMD motion onto the currently loaded model, replacing any previous
@@ -174,6 +176,7 @@ void load_project_file(const std::string& path) {
 
     if (g_model.valid()) {
         g_model.set_ik_enabled(project.ik_enabled);
+        g_model.set_physics_enabled(project.physics_enabled);
         for (const ProjectMorphWeight& morph : project.morphs) {
             g_model.set_morph_weight(morph.name, morph.weight);
         }
@@ -185,10 +188,12 @@ void load_project_file(const std::string& path) {
             g_model.set_bone_delta(bone.name, delta);
         }
         // Re-apply the frame now that the overrides are in, so the reopened
-        // pose matches what was saved.
+        // pose matches what was saved. Then reset the simulation to a known
+        // state rather than whatever the load's evaluate() left behind.
         if (g_model.has_animation()) {
             g_model.apply_animation(g_editor.timeline().current_frame);
         }
+        g_model.reset_physics();
     }
 
     g_editor.set_status("Opened project " + path);
@@ -331,7 +336,13 @@ void frame_cb() {
     g_editor.clear_timeline_changed();
 
     // Re-evaluate the pose and re-upload the skinned vertices for this frame.
-    g_model.update(g_renderer);
+    // Physics advances by the real frame time, so a slow frame steps further
+    // rather than the simulation running in slow motion. A request to reset
+    // the simulation (from the UI) is honoured before the step.
+    if (g_editor.consume_physics_reset()) {
+        g_model.reset_physics();
+    }
+    g_model.update(g_renderer, static_cast<float>(sapp_frame_duration()));
 
     // 1) Render the 3D scene into the offscreen target.
     if (g_viewport.valid()) {

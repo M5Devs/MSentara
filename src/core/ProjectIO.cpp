@@ -94,6 +94,7 @@ std::string project_to_json(const Project& project) {
 
     out["camera"] = camera_to_json(project.camera);
     out["ik_enabled"] = project.ik_enabled;
+    out["physics_enabled"] = project.physics_enabled;
 
     json morphs = json::array();
     for (const ProjectMorphWeight& morph : project.morphs) {
@@ -163,6 +164,10 @@ bool project_from_json(const std::string& text, Project& project,
 
     project.camera = camera_from_json(in.value("camera", json()), project.camera);
     project.ik_enabled = in.value("ik_enabled", project.ik_enabled);
+    // Absent in a project saved before physics existed: the default (true)
+    // keeps those files loading unchanged.
+    project.physics_enabled =
+        in.value("physics_enabled", project.physics_enabled);
 
     if (in.contains("morphs") && in["morphs"].is_array()) {
         for (const json& entry : in["morphs"]) {

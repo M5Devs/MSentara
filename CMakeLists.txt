@@ -59,6 +59,7 @@ add_library(msentara_core STATIC
     src/core/Camera.cpp
     src/core/Mesh.cpp
     src/core/Morph.cpp
+    src/core/Physics.cpp
     src/core/ProjectIO.cpp
     src/core/Scene.cpp
     src/core/Skeleton.cpp

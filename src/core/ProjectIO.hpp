@@ -82,6 +82,7 @@ struct Project {
     ProjectCamera camera;
 
     bool ik_enabled = true;
+    bool physics_enabled = true;
 
     std::vector<ProjectMorphWeight> morphs;
     std::vector<ProjectBonePose> bones;

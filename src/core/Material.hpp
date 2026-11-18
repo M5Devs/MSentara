@@ -23,6 +23,7 @@
 #include "core/Math.hpp"
 #include "core/Mesh.hpp"
 #include "core/Morph.hpp"
+#include "core/RigidBody.hpp"
 #include "core/Skeleton.hpp"
 
 namespace ms {
@@ -87,7 +88,13 @@ struct Model {
     // file; the live weights are driven by a VMD scalar track or the UI.
     MorphSet morphs;
 
+    // Optional rigid-body simulation (hair, skirts, accessories) and the
+    // joints that constrain it. Empty when the model carries none, which is
+    // common for a plain prop or an unrigged mesh.
+    RigidBodySet rigid_bodies;
+
     bool skinned() const { return !skeleton.empty(); }
+    bool simulated() const { return !rigid_bodies.empty(); }
 };
 
 }  // namespace ms

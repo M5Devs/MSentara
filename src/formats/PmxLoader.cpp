@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/RigidBody.hpp"
+
 namespace ms {
 
 namespace {
@@ -67,6 +69,10 @@ constexpr std::uint8_t kMorphUvExt4 = 7;
 constexpr std::uint8_t kMorphMaterial = 8;
 constexpr std::uint8_t kMorphFlip = 9;
 constexpr std::uint8_t kMorphImpulse = 10;
+
+// Display frame type ids. Only used to walk past the section.
+constexpr std::uint8_t kFrameBone = 0;
+constexpr std::uint8_t kFrameMorph = 1;
 
 // ---------------------------------------------------------------------------
 // Bounds-checked little-endian reader
@@ -1019,6 +1025,185 @@ bool read_morphs(Reader& r, const Globals& globals, MorphSet& morphs) {
     return true;
 }
 
+// Reads the display-frame section and discards it. Its size depends on the
+// frame type, so it must be walked exactly or the rigid-body section that
+// follows would be read from the wrong offset.
+bool read_display_frames(Reader& r, const Globals& globals) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, 1, "display frame", count)) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string name_local;
+        std::string name_universal;
+        std::uint8_t special = 0;
+        std::int32_t frame_count = 0;
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) || !r.u8(special) ||
+            !r.i32(frame_count) || frame_count < 0) {
+            return false;
+        }
+        const std::size_t frames = static_cast<std::size_t>(frame_count);
+        for (std::size_t f = 0; f < frames; ++f) {
+            std::uint8_t type = 0;
+            std::int32_t index = -1;
+            if (!r.u8(type)) {
+                return false;
+            }
+            switch (type) {
+                case kFrameBone:
+                    if (!r.index(globals.bone_index_size, true, index)) {
+                        return false;
+                    }
+                    break;
+                case kFrameMorph:
+                    if (!r.index(globals.morph_index_size, true, index)) {
+                        return false;
+                    }
+                    break;
+                default:
+                    return r.fail("unknown display frame type");
+            }
+        }
+    }
+    return true;
+}
+
+// Reads the rigid-body section. Positions and rotations are model-space in
+// PMX (the body's offset from its bone is derived), so only the Z-mirror is
+// applied — the same conversion the mesh and bones get. Shape sizes are local
+// extents and are left alone.
+bool read_rigid_bodies(Reader& r, const Globals& globals, RigidBodySet& set) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    // Smallest rigid body is ~32 bytes; 16 is a safe lower bound for the guard.
+    if (!r.count(declared, 16, "rigid body", count)) {
+        return false;
+    }
+
+    set.bodies.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string name_local;
+        std::string name_universal;
+        std::int32_t bone = -1;
+        std::uint8_t group = 0;
+        std::uint16_t mask = 0;
+        std::uint8_t shape = 0;
+        vec3 size;
+        vec3 position;
+        vec3 rotation;
+        float mass = 0.0f;
+        float move_attenuation = 0.0f;
+        float rotation_damping = 0.0f;
+        float repulsion = 0.0f;
+        float friction = 0.0f;
+        std::uint8_t mode = 0;
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) ||
+            !r.index(globals.bone_index_size, true, bone) || !r.u8(group) ||
+            !r.u16(mask) || !r.u8(shape) || !r.vec3f(size) ||
+            !r.vec3f(position) || !r.vec3f(rotation) || !r.f32(mass) ||
+            !r.f32(move_attenuation) || !r.f32(rotation_damping) ||
+            !r.f32(repulsion) || !r.f32(friction) || !r.u8(mode)) {
+            return false;
+        }
+        if (shape > static_cast<std::uint8_t>(RigidBodyShape::Capsule)) {
+            return r.fail("unknown rigid body shape");
+        }
+        if (mode > static_cast<std::uint8_t>(RigidBodyMode::DynamicAndBone)) {
+            return r.fail("unknown rigid body mode");
+        }
+
+        RigidBody body;
+        body.name = name_universal.empty() ? name_local : name_universal;
+        body.bone = bone;
+        body.group = group;
+        body.collision_mask = mask;
+        body.shape = static_cast<RigidBodyShape>(shape);
+        body.size = size;
+        body.position = to_right_handed(position);
+        body.rotation = rotation_to_right_handed(
+            euler_degrees_to_quat(glm::degrees(rotation)));
+        body.mass = mass;
+        body.linear_damping = move_attenuation;
+        body.angular_damping = rotation_damping;
+        body.restitution = repulsion;
+        body.friction = friction;
+        body.mode = static_cast<RigidBodyMode>(mode);
+        set.bodies.push_back(std::move(body));
+    }
+    return true;
+}
+
+// Reads the joint section. A joint's frame is model-space, so the position and
+// the orientation take the Z-mirror; its limits are expressed along the joint's
+// own (already mirrored) axes and are therefore kept as written.
+bool read_joints(Reader& r, const Globals& globals, RigidBodySet& set) {
+    std::size_t count = 0;
+    std::int32_t declared = 0;
+    if (!r.i32(declared)) {
+        return false;
+    }
+    if (!r.count(declared, 32, "joint", count)) {
+        return false;
+    }
+
+    set.joints.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::string name_local;
+        std::string name_universal;
+        std::uint8_t type = 0;
+        std::int32_t body_a = -1;
+        std::int32_t body_b = -1;
+        vec3 position;
+        vec3 rotation;
+        vec3 translation_min;
+        vec3 translation_max;
+        vec3 rotation_min;
+        vec3 rotation_max;
+        vec3 spring_translation;
+        vec3 spring_rotation;
+        if (!r.text(name_local, globals.encoding) ||
+            !r.text(name_universal, globals.encoding) || !r.u8(type) ||
+            !r.index(globals.rigidbody_index_size, true, body_a) ||
+            !r.index(globals.rigidbody_index_size, true, body_b) ||
+            !r.vec3f(position) || !r.vec3f(rotation) ||
+            !r.vec3f(translation_min) || !r.vec3f(translation_max) ||
+            !r.vec3f(rotation_min) || !r.vec3f(rotation_max) ||
+            !r.vec3f(spring_translation) || !r.vec3f(spring_rotation)) {
+            return false;
+        }
+        if (type > static_cast<std::uint8_t>(JointType::Hinge)) {
+            return r.fail("unknown joint type");
+        }
+
+        Joint joint;
+        joint.name = name_universal.empty() ? name_local : name_universal;
+        joint.type = static_cast<JointType>(type);
+        joint.body_a = body_a;
+        joint.body_b = body_b;
+        joint.position = to_right_handed(position);
+        joint.rotation = rotation_to_right_handed(
+            euler_degrees_to_quat(glm::degrees(rotation)));
+        joint.translation_min = translation_min;
+        joint.translation_max = translation_max;
+        joint.rotation_min = rotation_min;
+        joint.rotation_max = rotation_max;
+        joint.spring_translation = spring_translation;
+        joint.spring_rotation = spring_rotation;
+        set.joints.push_back(std::move(joint));
+    }
+    return true;
+}
+
 }  // namespace
 
 PmxResult parse_pmx(const std::uint8_t* data, std::size_t size) {
@@ -1063,12 +1248,22 @@ PmxResult parse_pmx(const std::uint8_t* data, std::size_t size) {
         return result;
     }
 
-    // Between the bone section and the morph section PMX stores the display
-    // frames, and after the morph section it stores rigid bodies, joints and
-    // (in 2.1) soft bodies. None of those affect geometry or animation yet, so
-    // the reader stops after the morphs; the model is complete for rendering
-    // and motion.
+    // Section order after the bones is: morphs, display frames, rigid bodies,
+    // joints (then 2.1 soft bodies). The display frames only describe the UI,
+    // so they are walked and discarded; the rigid bodies and joints are parsed
+    // into the model's physics data.
     if (!read_morphs(reader, globals, model.morphs)) {
+        result.error = reader.error();
+        return result;
+    }
+
+    if (!read_display_frames(reader, globals)) {
+        result.error = reader.error();
+        return result;
+    }
+
+    if (!read_rigid_bodies(reader, globals, model.rigid_bodies) ||
+        !read_joints(reader, globals, model.rigid_bodies)) {
         result.error = reader.error();
         return result;
     }

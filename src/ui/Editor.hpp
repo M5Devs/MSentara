@@ -113,6 +113,15 @@ public:
     bool timeline_changed() const { return timeline_changed_; }
     void clear_timeline_changed() { timeline_changed_ = false; }
 
+    // Set when the user asks to reset the rigid-body simulation from the UI.
+    // The editor does not own the solver (the model does), so it only records
+    // the request; the app consumes it once per frame.
+    bool consume_physics_reset() {
+        const bool requested = physics_reset_requested_;
+        physics_reset_requested_ = false;
+        return requested;
+    }
+
     void set_status(const std::string& status) { status_ = status; }
     const std::string& status() const { return status_; }
 
@@ -159,6 +168,7 @@ private:
     std::string pending_project_save_;
     bool has_pending_project_save_ = false;
     bool timeline_changed_ = false;
+    bool physics_reset_requested_ = false;
     std::string status_;
     char path_buffer_[512] = {};
     char vmd_path_buffer_[512] = {};

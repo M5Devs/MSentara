@@ -20,6 +20,7 @@ after a model is re-exported (as long as the morph and bone names are stable).
 | `timeline` | object | Playback state, see below. |
 | `camera` | object | Orbit-camera state, see below. |
 | `ik_enabled` | bool | Whether CCD-IK solving is on. |
+| `physics_enabled` | bool | Whether rigid-body simulation is on. Missing means `true`. |
 | `morphs` | array | Manual morph weights, see below. |
 | `bones` | array | Manual bone poses, see below. |
 

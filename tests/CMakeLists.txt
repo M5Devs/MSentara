@@ -72,3 +72,19 @@ set_tests_properties(test_vmd PROPERTIES
     LABELS "formats"
     TIMEOUT 60
 )
+
+# Physics spans both the format (PMX rigid-body/joint parsing) and core
+# (the solver), so it links the formats library, which pulls in core.
+add_executable(test_physics test_physics.cpp)
+target_include_directories(test_physics PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_link_libraries(test_physics PRIVATE msentara_formats)
+msentara_set_warnings(test_physics)
+
+add_test(NAME test_physics COMMAND test_physics)
+set_tests_properties(test_physics PROPERTIES
+    LABELS "core;formats"
+    TIMEOUT 60
+)

@@ -1,104 +1,36 @@
 # MSentara — project memory
 
 Cross-platform 2D/3D animation studio (C++17 / CMake / sokol + Dear ImGui
-docking + ImGuizmo + glm). Repo root is `MSentara/`; `LICENSE` is GPLv3.
-Milestone 0 (skeleton + viewport) complete. Milestone 1 (PMX loading, skeletal
-skinning, bone posing) complete: parser + skinning + pose + bone-tree UI +
-`--pmx` CLI. Milestone 2 (VMD motion import, Bezier interpolation, timeline
-playback) complete: `--vmd` CLI + File>Import VMD + functional timeline,
-8/8 ctest green. Daily logs hold the detail.
-
-## Milestone 2 — VMD motion (src/core/Animation, src/formats/VmdLoader)
-
-- **VMD layout** (saba-verified; also in `docs/REFERENCES.md`): header
-  `"Vocaloid Motion Data 0002"` (30 B) + 20 B Shift-JIS name (pre-0002 variant:
-  10 B name); bone key = 111 B (`name[15]`, `u32 frame`, `vec3 pos`,
-  `quat x,y,z,w`, 64 B interp); morph key = 23 B.
-- **The 64-byte interp block is FOUR identical 16-byte copies.** Byte
-  `(control*4 + channel)`, control 0..3 = x0,y0,x1,y1, channel 0..3 =
-  X,Y,Z,rot. X-curve = bytes 0,4,8,12; rot = 3,7,11,15; control = byte/127.
-  Do NOT read it as four sequential curves — that silently swaps channels.
-- **Left-handed → right-handed**: translation `(x,y,-z)`, quaternion
-  `(-x,-y,z,w)` (conjugate by diag(1,1,-1)). Rotation about Z is unchanged.
-- `Bezier::ease()` bisects `x(t)=time` (24 iters, 1e-5 tol) then returns
-  `y(t)`. `apply_clip()` matches tracks to bones **by name** and writes the
-  sampled quat into `pose.delta` as Euler degrees (via
-  `quat_to_euler_degrees`, which reuses `Transform::from_matrix`).
-- `ShiftJis.{hpp,cpp}` + generated `SjisTable.hpp` (CP932→UTF-8, no
-  ICU/iconv; regen with `scripts/gen_sjis_table.py`). `SjisTable.hpp` is the
-  only large generated file; `kDoubleByte` is `(key<<16|cp)` sorted for
-  binary search, `kSingleByte[256]` holds ASCII + half-width katakana
-  (lead bytes are 0 so they fall through to the double-byte path).
-- `scripts/make_test_vmd.py` keys a motion to the synthetic PMX's `root`/
-  `child` bones so `--pmx … --vmd …` animates headlessly. Env vars:
-  `MSENTARA_PMX`, `MSENTARA_VMD`, `MSENTARA_FRAME_LIMIT`.
-
-## Milestone 3 — morphs, append transforms, IK (src/core/Morph, Skeleton, PmxLoader)
-
-- **`Morph.hpp/.cpp`**: `MorphTarget{kind, vertex_offsets, uv_offsets,
-  bone_offsets, material_offsets, group_refs}`; `MorphSet` with
-  `add/find/target/size/weights/reset_weights/set_weight`. Group morphs are
-  flattened to leaf weights by `resolved_weights()` with a **visited set**
-  (cyclic groups cannot loop forever). `accumulate_offsets()` builds the
-  per-vertex `vec3` list + `BoneMorphOffset` list. `IkTypes.hpp` holds
-  `IkLink`/`IkSolver`.
-- **Evaluation order** (`Skeleton.cpp`): morph offsets -> append/grant
-  (parent's *animated* rotation slerped from identity by weight; translation
-  scaled) -> CCD-IK. `evaluate_pose_full(skeleton, pose, bone_morphs, ik_on)`
-  is the entry point; `skin_mesh(mesh, pose)` and
-  `skin_mesh(mesh, pose, vertex_offsets)` both exist.
-- **IK axis bug (the one that ate the afternoon)**: the per-link rotation
-  must be `cross(ikDir, targetDir)` with angle `acos(dot)`. `cross(targetDir,
-  ikDir)` rotates *away* from the target — the solver then converges to a
-  mirror pose. Verified with a tiny glm probe: `angleAxis(90°, +Z)` maps
-  `+X -> +Y`, i.e. `cross(from,to)`.
-- **IK rotation applies to the effector AND every link**, not just the bone
-  owning the solver. `Bone::ik_chain_member` is set in `compute_rest()` and
-  gates where `Pose::ik_rotation` is applied. Missing this made IK a no-op on
-  the link bones (the effector moved, the chain did not).
-- **PMX bone flag bits** (the loader reads these in order, only when set):
-  `0x0001` tail-is-index, `0x0020` IK, `0x0100` inherit-rotation, `0x0200`
-  inherit-translation (both share ONE parent+weight), `0x0400` fixed axis,
-  `0x0800` local axes, `0x2000` external-parent (**4-byte int**, not an
-  index-width value). IK block = target, `u32` loop, `float` limit, `u32`
-  link count, then per link `bone + u8 [+ 2 vec3 limits]`. IK limits are
-  **signed radians**; the Z-mirror negates both bounds.
-- **PMX morph section** comes after bones. Morph = local name, universal
-  name, `u8` panel, `u8` type, `i32` count, offsets. Types 0=Group, 1=Vertex,
-  2=Bone (index + vec3 translation + vec4 quat), 3–7=UV, 8=Material (big),
-  9=Flip (same shape as Group), 10=Impulse. MSentara applies 0/1/2 and skips
-  the rest **by exact byte size** so real files still parse.
-- **`scripts/make_test_pmx.py` / `make_test_vmd.py`** now emit the IK block,
-  morphs, and a VMD morph track; the headless run reports
-  `N morphs, M IK chains`. Tests: `tests/test_pmx.cpp` gained `test_morphs`;
-  new `tests/test_ik_morph.cpp` covers IK reach/disable/limit, append
-  rotate+translate, bone morph, vertex morph. 9/9 ctest green, gcc ASan+UBSan
-  clean. (No clang/MinGW/emcc in this container — only gcc available.)
+docking + ImGuizmo + glm). Repo root `MSentara/`, GPLv3. Repo remote is
+`M5Devs/MSentara`. Milestones 0–4B complete: skeleton+viewport, PMX loading +
+skinning, VMD motion, morphs/append/CCD-IK, `.msentara` project format, CI, and
+PMX rigid-body physics (hair/cloth). **Per-milestone detail lives in the daily
+logs** (e.g. `2026-11-17.md`); this index keeps only durable, cross-cutting
+facts.
 
 ## Build memory limit — READ THIS FIRST
 
-The container is killed by OOM during parallel C++ compilation. **Always
-build with `-j 1`** (`cmake --build build -j 1`), never unbounded. Configure
-with `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=-g0 -DCMAKE_C_FLAGS=-g0` to
-keep compiler RSS down. Run long builds in the background and poll the log;
-foreground commands are capped ~1080 s.
+The container is OOM-killed during parallel C++ compilation. **Always build
+with `-j 1`**, never unbounded. Configure Debug with `-DCMAKE_BUILD_TYPE=Debug
+-DCMAKE_CXX_FLAGS=-g0 -DCMAKE_C_FLAGS=-g0` to keep compiler RSS down. Run long
+builds in the background and poll the log; foreground commands are capped
+~1080 s.
 
-The toolchain does **not** persist across container resets: `pip install
---user cmake ninja` and `sudo apt-get install -y libgl1-mesa-dev libglx-dev
+The toolchain does **not** persist across container resets: re-run `pip install
+--user cmake ninja` and `apt-get install -y libgl1-mesa-dev libglx-dev
 libx11-dev libxcursor-dev libxi-dev libxext-dev libxrandr-dev libxinerama-dev
-xvfb x11-utils imagemagick` must be re-run. `/workspace` persists.
+xvfb x11-utils imagemagick`. `/workspace` persists.
 
-**FetchContent cannot shallow-fetch the pinned sokol SHA.** A fresh configure
-fails with `fatal: unable to read tree (f5e88334…)` because the pinned commit
-is not on a branch tip. Fix: pre-clone the deps once to a cache outside
-`build/` and pass `-DFETCHCONTENT_SOURCE_DIR_{SOKOL,IMGUI,IMGUIZMO,GLM,STB}=…`
-(see the daily log for the exact clone/checkout list). Never `rm -rf build`
-without those overrides or the whole configure dies.
+**FetchContent cannot shallow-fetch the pinned sokol SHA** (it is not a branch
+tip): a fresh configure dies with `fatal: unable to read tree (f5e88334…)`.
+Fix: drop `GIT_SHALLOW` from the commit-pinned clones (sokol/imgui/imguizmo),
+pin stb to a SHA, keep shallow/URL fetch for glm (tag) and nlohmann/json
+(release zip). See `cmake/MSentaraDependencies.cmake`; do not "optimise" back.
 
 ## Layout & the one hard dependency rule
 
 ```
-src/core/       scene, camera, timeline, transform, mesh — NO rendering, NO GPU
+src/core/       scene, camera, timeline, transform, mesh, physics — NO GPU
 src/platform/   sokol (window/input/gfx) wrapper + Renderer
 src/ui/         Dear ImGui docking layout, theme, ImGuizmo wiring
 src/formats/    PMX/VMD parsers — produce core data structures only
@@ -109,28 +41,23 @@ cmake/          dependency fetching, warning flags, web shell
 `core` must never include a sokol or ImGui header. Everything the tests touch
 lives there, which is why `ctest` needs no display.
 
-## sokol_gfx: the two traps that cost real time
+## Build / test / headless verify
 
-Both were **silent in Release** (validation is compiled out) and both made the
-offscreen viewport sample an empty texture while the ImGui UI looked fine.
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_CXX_FLAGS=-g0 -DCMAKE_C_FLAGS=-g0
+cmake --build build -j 1
+ctest --test-dir build --output-on-failure
+```
 
-1. **`sg_commit()` must be called once per frame**, after the final pass ends.
-   sokol_gfx defers resource creation and buffer/image uploads to it;
-   `sokol_imgui.h` never calls it (grep: 0 hits). Without it, ImGui geometry
-   still draws (it is just draw-list data) but the 3D viewport is black.
-2. **Render-target `sg_image_desc` images inherit
-   `sg_desc.environment.defaults.sample_count`** (the swapchain MSAA count)
-   when left at 0. Pipelines built at 1 then trip
-   `VALIDATE_APIP_ATTACHMENT_SAMPLE_COUNT`. Set `sample_count` explicitly on
-   every offscreen colour/depth image, and keep pipeline sample counts equal
-   to the pass attachment's.
+Warnings are not errors but the code must stay clean under `-Wall -Wextra
+-Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wdouble-promotion
+-Wformat=2`; third-party code is included SYSTEM so its warnings do not count.
+`-Wdouble-promotion` fires on every `ImGui::Text*` varargs float (promoted to
+double) — fix with an explicit `static_cast<double>(…)`, never by editing the
+warning set.
 
-**Rule: reproduce any sokol problem in a Debug build first.** The validation
-layer names the exact log item; Release tells you nothing.
-
-## Headless verification (no GPU in this container)
-
-Software rendering works and is how the viewport was visually confirmed:
+Headless (no GPU) viewport verification:
 
 ```sh
 Xvfb :77 -screen 0 1600x900x24 &
@@ -140,118 +67,38 @@ DISPLAY=:77 ./build/MSentara &     # MSENTARA_FRAME_LIMIT=<n> self-quits
 DISPLAY=:77 import -window root out.png
 ```
 
-Judge the capture by counting distinct / non-background pixels per region, not
-by eyeballing. The only expected stderr noise is
-`LINUX_X11_QUERY_SYSTEM_DPI_FAILED` (no `Xft.dpi` under Xvfb).
+The only expected stderr noise is `LINUX_X11_QUERY_SYSTEM_DPI_FAILED`.
 
-## Build
+## sokol_gfx: the two traps that cost real time
 
-```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
+Both were **silent in Release** (validation compiled out); both made the
+offscreen viewport sample an empty texture while the ImGui UI looked fine.
 
-Deps via `FetchContent` (sokol, imgui `docking`, ImGuizmo, glm, stb).
-ImGuizmo's own CMakeLists is bypassed with a non-existent `SOURCE_SUBDIR`.
-Our code must stay clean under `-Wall -Wextra -Wpedantic -Wshadow
--Wconversion -Wsign-conversion -Wdouble-promotion -Wformat=2`; third-party
-code is included as SYSTEM so its warnings do not count.
+1. **`sg_commit()` must be called once per frame**, after the final pass.
+   `sokol_imgui.h` never calls it (grep: 0 hits). Without it the 3D viewport is
+   black.
+2. **Render-target `sg_image_desc` images inherit
+   `sg_desc.environment.defaults.sample_count`** (the swapchain MSAA count)
+   when left at 0. Pipelines built at 1 then trip
+   `VALIDATE_APIP_ATTACHMENT_SAMPLE_COUNT`. Set `sample_count` explicitly on
+   every offscreen colour/depth image.
 
-## Milestone 1 — PMX parsing + skeletal skinning
+**Rule: reproduce any sokol problem in a Debug build first.**
 
-- **`src/formats/PmxLoader.cpp`**: bounds-checked PMX 2.0/2.1 reader
-  (`Reader` with `u8/i8/u16/i16/u32/i32/f32/vec*/text/index/skip/count`).
-  Text is length-prefixed UTF-16LE or UTF-8 per the global flag.
-- **PMX vertex weight types** (verified against the felixjones spec and
-  benikabocha/saba `PMXFile.cpp` — see `docs/REFERENCES.md`): `0=BDEF1` (one
-  index, implicit weight 1.0), `1=BDEF2` (two indices + **4-byte IEEE-754
-  float** weight; second bone gets `1 - w`), `2=BDEF4` (four indices + four
-  float weights), `3=SDEF` (BDEF2 form plus three `vec3` C/R0/R1 = 36 bytes),
-  `4=QDEF` (BDEF4 form). The `[0,100]` **byte** weight is the older **PMD**
-  format, NOT PMX — using it desynchronises the whole vertex section. Each
-  vertex then carries its **own edge-scale float** immediately after its
-  weights (per-vertex, not a trailing array).
-- **Handedness**: MMD is left-handed Y-up Z-forward; mirroring Z
-  (`vec3(x, y, -z)`) converts to GL/GLM right-handed AND flips triangle
-  winding, which is exactly what CCW pipelines want, so indices are used
-  unchanged. Verified by a test that a vertex at z=+3 arrives at z=-3.
-- **`src/core/Skeleton.cpp` `resolve_order`**: cycle-safe iterative DFS.
-  A bone whose parent is already on the DFS stack must be emitted to break
-  the cycle, else the loop never terminates (this was a real hang — the
-  `test_deep_hierarchy_and_cycles` 2000-bone case exposed it).
-- **CPU skinning** (`skin_mesh`) streams into a transient vertex buffer each
-  frame, so no bone-matrix uniform array is needed (WebGL2 would choke on a
-  full rig's worth). `src/ui/ModelInstance.cpp` owns model + pose + GPU
-  resources and is the only place that ties core to the renderer.
+## Cross-cutting gotchas
 
-### sokol revision pinned here (f5e8833) — API differences from older docs
-
-- Textures use **separate** `sg_image` + `sg_view` (texture view) +
-  `sg_sampler` objects, bound via `sg_bindings.views[i]` /
-  `sg_bindings.samplers[i]`.
-- Shader texture binding: `sg_shader_desc.views[i].texture.{stage,image_type,
-  sample_type}` (note the nested `.texture`), `…samplers[i].{stage,
-  sampler_type}`, and a `texture_sampler_pairs[i]` naming the GLSL sampler
-  uniform (`glsl_name`) — required on GL 4.1 / WebGL2.
-- Per-frame vertex data: create the buffer with `.usage.write_transient = true`
-  and a fixed `.size`, then `sg_write_buffer_transient()` **outside** a pass,
-  and draw it in the same frame. Growing it means destroy + recreate.
-- `sg_write_buffer_unsealed` + `sg_seal_buffer` is the separate path for
-  immutable one-shot uploads.
-- `ImageIO.cpp` holds the single `STB_IMAGE_IMPLEMENTATION` (private include
-  dir), normalises every source to RGBA8 with
-  `stbi_set_flip_vertically_on_load(1)`, and a 1x1 white texture is the
-  untextured-material fallback so the shader has no branch.
-
-## Gotchas already hit
-- sokol_app's X11 backend needs `X11` + `Xcursor`/`Xi`/`Xext` linked
-  explicitly, else `undefined reference to 'XConvertSelection'`.
+- sokol_app X11 backend needs `X11` + `Xcursor`/`Xi`/`Xext` linked explicitly.
 - `glm::perspective` puts -1 in `m[2][3]`, not `m[3][2]`.
 - ImGuizmo must be included **after** `imgui.h`.
-- Inside the viewport use `ImGuizmo::IsOver()/IsUsing()` to arbitrate input,
-  **not** `io.WantCaptureMouse` — the viewport is itself an ImGui window, so
-  that flag is always true there and would disable navigation entirely.
-- `R` is ambiguous between Blender `G/R/S` (Rotate) and DCC `W/E/R` (Scale);
-  Blender wins, `Shift+R` gives Scale.
-- The Emscripten path is wired but **unverified** — no `emcc` in this
-  container. WebGL2/GLES3 is the target, so shaders must be ES3-compatible
-  (no UBO-free assumptions, no desktop-only GLSL).
-
-## Milestone 4A — fresh FetchContent, `.msentara` project format, CI (2026-11-17)
-
-- **Fresh-fetch bug root cause**: `GIT_SHALLOW TRUE` on a *commit*-pinned
-  FetchContent does `git clone --no-checkout --depth 1 --no-single-branch`
-  then `git checkout <sha>`. A SHA that is not a branch tip (sokol's is not)
-  is absent from the depth-1 history → `fatal: unable to read tree`. Fix:
-  drop `GIT_SHALLOW` from the commit-pinned clones (sokol/imgui/imguizmo) and
-  pin stb to a SHA too. glm (tag 1.0.1) and nlohmann/json (release URL+hash)
-  keep shallow/URL fetching — a tag IS a tip so shallow is safe there.
-  `cmake/MSentaraDependencies.cmake` documents this; do not "optimise" it back.
-- **nlohmann/json** is fetched as the small `include.zip` release asset
-  (v3.11.3, SHA256 a22461d1…) rather than a git clone; exposed as an INTERFACE
-  target. It is linked **PRIVATE** into `msentara_core` so only ProjectIO.cpp
-  pays for the header.
-- **`.msentara` format** (`src/core/ProjectIO.{hpp,cpp}`): versioned JSON,
-  `format:"msentara-project"`, `version:1`. Stores model/motion *paths* plus
-  timeline/camera/ik + name-keyed morph weights and bone deltas (only
-  non-default ones). `project_to_json` is deterministic (fixed key order,
-  `dump(2)`) so save→load→save is byte-identical. Wrong `format`/`version` is
-  rejected; a wrong-typed field falls back to its default (never throws).
-  CLI: `--project <p>` (supersedes `--pmx`/`--vmd`) + `MSENTARA_PROJECT`.
-- **Timeline** gained a `loop` flag; `advance()` clamps+stops when loop=false.
-- **Shaders are now backend-portable**: `Renderer.cpp` builds each GLSL
-  program as `kGlslPrologue + <shared body>`; prologue is `#version 410` on
-  desktop and `#version 300 es` + `precision highp {float,int,sampler2D};`
-  under `__EMSCRIPTEN__`. The ES `sampler2D` precision is required (ES has no
-  default for it). Web link flags need `-sMIN/MAX_WEBGL_VERSION=2`.
-- **CI** `.github/workflows/ci.yml`: linux (gcc+clang, Debug, ctest + Xvfb
-  headless smoke), windows (MSVC/Ninja), emscripten (emsdk 3.1.61 → uploads
-  `MSentara.{html,js,wasm}`). Every job configures from scratch, so a broken
-  pin fails CI. Verified locally: fresh configure OK, 10/10 ctest, Emscripten
-  `MSentara.wasm` (wasm magic 00 61 73 6d) builds clean.
-- **Container toolchain reset again** this session: re-`pip install --user
-  cmake ninja`; apt needs libgl1-mesa-dev/libglx-dev + X11 dev pkgs + xvfb.
-  emsdk 3.1.61 installs to /tmp/emsdk (source emsdk_env.sh). `build/` had a
-  stale cache pointing at a deleted `/tmp/msdeps` override → wipe before
-  reconfigure.
+- Inside the viewport arbitrate input with `ImGuizmo::IsOver()/IsUsing()`, NOT
+  `io.WantCaptureMouse` (always true there; would disable navigation).
+- `R` is ambiguous: Blender `G/R/S` Rotate wins over DCC `W/E/R` Scale;
+  `Shift+R` gives Scale.
+- MMD is left-handed Y-up Z-forward: mirror Z (`vec3(x,y,-z)`) for right-handed
+  GL, which also flips winding to what CCW pipelines want, so indices are used
+  unchanged.
+- PMX rigid bodies/joints and VMD layout details are in `docs/REFERENCES.md` —
+  check it before touching a parser; do not infer layout from code.
+- Emscripten path builds (`em++` available at `/tmp/emsdk`); shaders must be
+  ES3-compatible (`Renderer.cpp` emits a `#version 410` / `#version 300 es`
+  prologue; the ES `sampler2D` precision is required).

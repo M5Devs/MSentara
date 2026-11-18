@@ -450,6 +450,22 @@ void Editor::draw_bone_properties() {
         ImGui::TextDisabled("(%zu chains)",
                             m->model().skeleton.ik_solvers().size());
     }
+
+    // Rigid-body simulation (hair, skirts, accessories). The toggle gates the
+    // solver without discarding its state, and Reset snaps every dynamic body
+    // back to the rest pose.
+    if (m->has_physics()) {
+        bool physics = m->physics_enabled();
+        if (ImGui::Checkbox("Simulate Physics", &physics)) {
+            m->set_physics_enabled(physics);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu bodies, %zu joints)", m->physics().size(),
+                            m->physics().joint_count());
+        if (ImGui::Button("Reset Physics")) {
+            physics_reset_requested_ = true;
+        }
+    }
     ImGui::Separator();
 
     // Editing the pose delta is the authored value: a rotation here pivots
@@ -470,8 +486,10 @@ void Editor::draw_bone_properties() {
     const mat4& global = pose.global[static_cast<std::size_t>(bone)];
     const vec3 world_position(global[3]);
     ImGui::Spacing();
-    ImGui::TextDisabled("World position: %.3f, %.3f, %.3f", world_position.x,
-                        world_position.y, world_position.z);
+    ImGui::TextDisabled("World position: %.3f, %.3f, %.3f",
+                        static_cast<double>(world_position.x),
+                        static_cast<double>(world_position.y),
+                        static_cast<double>(world_position.z));
 }
 
 // Lists every morph the model defines, grouped by kind, each with a slider.
@@ -504,7 +522,7 @@ void Editor::draw_morphs_panel() {
 
     std::vector<float>& weights = morphs.weights();
     for (std::size_t i = 0; i < morphs.size(); ++i) {
-        const MorphTarget& target = morphs.target(i);
+        const MorphTarget& target = morphs.target(static_cast<int>(i));
         const char* kind = "Vertex";
         switch (target.kind) {
             case MorphTarget::Kind::Vertex: kind = "Vertex"; break;
@@ -666,7 +684,8 @@ void Editor::draw_timeline_panel() {
     ImGui::SameLine();
     ImGui::TextDisabled("| %d frames  (%.2fs @ %.0f fps)",
                         timeline_.frame_end - timeline_.frame_start,
-                        timeline_.duration_seconds(), timeline_.fps);
+                        static_cast<double>(timeline_.duration_seconds()),
+                        static_cast<double>(timeline_.fps));
 
     ImGui::Separator();
 
@@ -761,6 +780,7 @@ Project Editor::capture_project(const std::string& model_path,
 
     if (model_ != nullptr && model_->valid()) {
         project.ik_enabled = model_->ik_enabled();
+        project.physics_enabled = model_->physics_enabled();
 
         // Only non-zero morph weights are written: a default pose then yields
         // an empty array, and a diff shows exactly which morphs the user
