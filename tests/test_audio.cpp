@@ -36,6 +36,21 @@ using namespace ms::test;
 
 namespace {
 
+// M_PI is not part of standard C++: MSVC hides it behind _USE_MATH_DEFINES and
+// MinGW only exposes it from <math.h> with GNU extensions enabled. A local
+// constant keeps this test portable without depending on either.
+constexpr double kPi = 3.14159265358979323846;
+
+// Windows has no setenv(); _putenv_s is the equivalent. Wrapped once so the
+// test builds unchanged under MSVC, MinGW and POSIX.
+void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
 // A one-second mono 8 kHz tone that is silent for its first half, then a
 // steady 440 Hz sine at half full scale. That shape makes the envelope easy to
 // assert: near-zero buckets first, then a plateau.
@@ -43,7 +58,7 @@ std::vector<float> make_test_samples(std::uint32_t rate) {
     std::vector<float> samples(rate, 0.0f);
     for (std::uint32_t i = rate / 2; i < rate; ++i) {
         const double t = static_cast<double>(i) / static_cast<double>(rate);
-        samples[i] = 0.5f * static_cast<float>(std::sin(2.0 * M_PI * 440.0 * t));
+        samples[i] = 0.5f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * t));
     }
     return samples;
 }
@@ -163,7 +178,7 @@ bool write_wav(const std::string& path, const std::vector<float>& samples,
 void test_decode_and_transport() {
     // Force the virtual-clock path: deterministic, silent, and it avoids ALSA
     // probing absent sound cards on CI.
-    setenv("MSENTARA_AUDIO", "0", 1);
+    set_env("MSENTARA_AUDIO", "0");
 
     const std::uint32_t rate = 8000;
     const std::vector<float> samples = make_test_samples(rate);

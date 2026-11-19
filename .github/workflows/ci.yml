@@ -5,7 +5,8 @@
 # Three jobs mirror the three platforms Milestone 0 targets:
 #   * linux      — GCC and Clang, Debug, unit tests + headless smoke run
 #   * windows    — MSVC, Release build of the desktop app
-#   * emscripten — WebGL2/WASM bundle, uploaded as a downloadable artifact
+#   * emscripten — WebGL2/WASM bundle, uploaded as a downloadable artifact and,
+#                  on main, published to GitHub Pages by the deploy-pages job
 #
 # Every job configures from scratch (no build cache), which is also the
 # regression test for the pinned FetchContent revisions: if a pin stops
@@ -166,3 +167,50 @@ jobs:
             build-web/MSentara.js
             build-web/MSentara.wasm
           if-no-files-found: error
+
+      # Stage a self-contained folder for GitHub Pages. Emscripten names the
+      # entry point after the target, but Pages serves a directory by looking
+      # for index.html, so MSentara.html is copied to index.html. The bundle
+      # references MSentara.js/MSentara.wasm by name, so those keep their names
+      # next to it rather than being renamed.
+      - name: Stage Pages site
+        run: |
+          mkdir -p build-web/pages
+          cp build-web/MSentara.js build-web/MSentara.wasm build-web/pages/
+          cp build-web/MSentara.html build-web/pages/index.html
+          # A .nojekyll stops Pages from running Jekyll, which would otherwise
+          # ignore files it treats as special.
+          touch build-web/pages/.nojekyll
+          ls -l build-web/pages
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build-web/pages
+
+  # Publishes the Emscripten bundle to https://<owner>.github.io/MSentara/.
+  # Runs only from main: a pull request must never overwrite the live site.
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: emscripten
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Serialise deployments so two pushes close together cannot race, and do
+    # not cancel one that is already publishing.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
