@@ -395,6 +395,56 @@ void Editor::draw_main_menu_bar() {
             }
         }
         ImGui::Separator();
+        // An audio track drives the timeline playhead and the waveform strip,
+        // and is the source for the lip-sync generator.
+        ImGui::TextUnformatted("Import Audio (WAV/MP3/FLAC/OGG)");
+        ImGui::SetNextItemWidth(320.0f);
+        const bool audio_submitted = ImGui::InputText(
+            "##audio_path", audio_path_buffer_, sizeof(audio_path_buffer_),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Load Audio") || audio_submitted) {
+            if (audio_path_buffer_[0] != '\0') {
+                request_import_audio(audio_path_buffer_);
+            }
+        }
+        // Lip sync: turn the loaded envelope into mouth motion. The 3D path
+        // drives a morph weight; the 2D path switches the mouth layer's sprite
+        // variant. Disabled until audio is loaded.
+        ImGui::BeginDisabled(!has_audio());
+        ImGui::TextUnformatted("Lip Sync");
+        ImGui::SetNextItemWidth(200.0f);
+        ImGui::InputText("Morph##lipsync_morph", lipsync_morph_buffer_,
+                         sizeof(lipsync_morph_buffer_));
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputFloat("Gain##lipsync_gain", &lipsync_settings_.gain, 0.1f,
+                          1.0f, "%.2f");
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::InputFloat("Threshold##lipsync_thresh",
+                          &lipsync_settings_.threshold, 0.01f, 0.1f, "%.2f");
+        ImGui::SetNextItemWidth(200.0f);
+        ImGui::InputText("Open Variants##lipsync_variants",
+                         lipsync_variants_buffer_,
+                         sizeof(lipsync_variants_buffer_));
+        if (ImGui::Button("Generate 3D Lip Sync")) {
+            lipsync_settings_.morph_name = lipsync_morph_buffer_;
+            lipsync_settings_.open_variants.clear();
+            lipsync_settings_.frame_start = timeline_.frame_start;
+            lipsync_settings_.frame_end = -1;
+            lipsync_target_2d_ = false;
+            has_pending_lipsync_ = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Generate 2D Lip Sync")) {
+            lipsync_settings_.morph_name = lipsync_morph_buffer_;
+            lipsync_settings_.open_variants =
+                parse_variant_indices(lipsync_variants_buffer_);
+            lipsync_settings_.frame_start = timeline_.frame_start;
+            lipsync_settings_.frame_end = -1;
+            lipsync_target_2d_ = true;
+            has_pending_lipsync_ = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::Separator();
         // Reusable 2D character presets: export the selected layer and its
         // subtree as a .mschar2d, or drop a saved one into the scene. The app
         // performs the file I/O and re-decodes the images.
@@ -1030,6 +1080,53 @@ void Editor::draw_timeline_panel() {
     }
     ImGui::Dummy(ruler_size);
 
+    // Audio waveform strip: the loudness envelope aligned to the same frame
+    // range as the ruler above, with a scrub-able playhead. Shown only when an
+    // audio file is loaded.
+    if (has_audio()) {
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Audio");
+        ImGui::SameLine();
+        if (!audio_label_.empty()) {
+            ImGui::TextDisabled("%s", audio_label_.c_str());
+        }
+        ImGui::SameLine();
+        // Transport for the audio track. Kept separate from the timeline
+        // transport so audio can be auditioned without moving the pose.
+        if (ImGui::Button(audio_playing_ ? "Pause Audio" : "Play Audio")) {
+            if (audio_playing_) {
+                audio_pause_requested_ = true;
+            } else {
+                audio_play_requested_ = true;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop Audio")) {
+            audio_stop_requested_ = true;
+        }
+
+        const ImVec2 wave_size(ImGui::GetContentRegionAvail().x, 56.0f);
+        const ImVec2 wave_origin = ImGui::GetCursorScreenPos();
+        draw_audio_waveform(wave_origin.x, wave_origin.y, wave_size.x,
+                            wave_size.y);
+        // A click or drag on the strip seeks. Compute the time from the x
+        // position over the same frame range the strip was drawn with.
+        ImGui::InvisibleButton("##audio_scrub", wave_size);
+        if (ImGui::IsItemActive() &&
+            ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const float t = (mouse.x - wave_origin.x) /
+                            (wave_size.x > 1.0f ? wave_size.x : 1.0f);
+            const double dur = static_cast<double>(
+                audio_envelope_.frame_count) /
+                (audio_envelope_.frames_per_second > 0.0
+                     ? audio_envelope_.frames_per_second
+                     : 30.0);
+            audio_seek_seconds_ = static_cast<double>(t) * dur;
+            audio_seek_requested_ = true;
+        }
+    }
+
     // Keyframe easing editor for the active keyframe. It works in both modes:
     // 2D edits the selected layer's channel, 3D the selected bone's key.
     ImGui::Spacing();
@@ -1053,6 +1150,61 @@ void Editor::draw_timeline_panel() {
     }
 
     ImGui::End();
+}
+
+// Draws the loudness envelope as a symmetric waveform, with a playhead at the
+// audio engine's current position. The strip spans the whole clip (its own
+// duration), not the timeline range, so the waveform is always fully visible;
+// the playhead maps the clip's seconds onto that width.
+void Editor::draw_audio_waveform(float origin_x, float origin_y, float width,
+                                 float height) {
+    if (audio_envelope_.empty() || width <= 1.0f || height <= 1.0f) {
+        return;
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0(origin_x, origin_y);
+    const ImVec2 p1(origin_x + width, origin_y + height);
+
+    dl->AddRectFilled(p0, p1, IM_COL32(24, 24, 24, 255));
+    dl->AddRect(p0, p1, IM_COL32(60, 60, 60, 255));
+
+    const float mid_y = origin_y + height * 0.5f;
+    const int frames = static_cast<int>(audio_envelope_.levels.size());
+    const float bar_w = width / static_cast<float>(frames > 0 ? frames : 1);
+
+    // One vertical bar per frame bucket, mirrored about the centre line. The
+    // envelope is normalised to [0, 1], so it fills the strip at its loudest.
+    for (int f = 0; f < frames; ++f) {
+        const float level = audio_envelope_.levels[static_cast<std::size_t>(f)];
+        const float half = level * (height * 0.5f - 2.0f);
+        if (half <= 0.0f) {
+            continue;
+        }
+        const float x = origin_x + (static_cast<float>(f) + 0.5f) * bar_w;
+        const float w = bar_w > 1.0f ? bar_w - 0.5f : 1.0f;
+        dl->AddRectFilled(ImVec2(x - w * 0.5f, mid_y - half),
+                          ImVec2(x + w * 0.5f, mid_y + half),
+                          IM_COL32(120, 190, 255, 220));
+    }
+
+    // Centre line, so silence reads as a flat baseline.
+    dl->AddLine(ImVec2(origin_x, mid_y), ImVec2(origin_x + width, mid_y),
+                IM_COL32(70, 70, 70, 255));
+
+    // Playhead: audio seconds mapped onto the clip's full width.
+    const double dur = static_cast<double>(audio_envelope_.frame_count) /
+                       (audio_envelope_.frames_per_second > 0.0
+                            ? audio_envelope_.frames_per_second
+                            : 30.0);
+    if (dur > 0.0) {
+        const float t = static_cast<float>(audio_playhead_seconds_ / dur);
+        if (t >= 0.0f && t <= 1.0f) {
+            const float px = origin_x + t * width;
+            dl->AddLine(ImVec2(px, origin_y), ImVec2(px, origin_y + height),
+                        IM_COL32(255, 120, 90, 255), 2.0f);
+        }
+    }
 }
 
 // Opens a modal that collects the offline export parameters (output directory
@@ -1127,10 +1279,12 @@ void Editor::draw_export_modal() {
 }
 
 Project Editor::capture_project(const std::string& model_path,
-                                const std::string& motion_path) const {
+                                const std::string& motion_path,
+                                const std::string& audio_path) const {
     Project project;
     project.model_path = model_path;
     project.motion_path = motion_path;
+    project.audio_path = audio_path;
 
     project.frame_start = timeline_.frame_start;
     project.frame_end = timeline_.frame_end;

@@ -210,7 +210,10 @@ void AudioEngine::play() {
         seek_seconds(0.0);
     }
     if (impl_->start_device()) {
-        if (ma_device_start(&impl_->device) != MA_SUCCESS) {
+        // Only start a device that is not already running: calling start twice
+        // is an error in miniaudio, and play() may be pressed while playing.
+        if (!ma_device_is_started(&impl_->device) &&
+            ma_device_start(&impl_->device) != MA_SUCCESS) {
             impl_->device_error = "audio device failed to start";
             impl_->shutdown_device();
         }

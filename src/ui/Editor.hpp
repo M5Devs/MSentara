@@ -19,6 +19,8 @@
 #include <string>
 
 #include "core/Animation.hpp"
+#include "core/AudioAnalysis.hpp"
+#include "core/LipSync.hpp"
 #include "core/Camera.hpp"
 #include "core/Layer2D.hpp"
 #include "core/OnionSkin.hpp"
@@ -129,6 +131,89 @@ public:
         has_pending_image2d_ = false;
         return pending_image2d_;
     }
+
+    // An audio import requested from the File menu. The app owns the
+    // AudioEngine, so it decodes and loads the file, then hands the envelope
+    // back through set_audio_envelope() for the waveform strip.
+    void request_import_audio(const std::string& path) {
+        pending_audio_ = path;
+        has_pending_audio_ = true;
+    }
+    bool has_pending_audio() const { return has_pending_audio_; }
+    std::string take_pending_audio() {
+        has_pending_audio_ = false;
+        return pending_audio_;
+    }
+
+    // The per-frame loudness envelope of the loaded audio, for the timeline
+    // waveform. Copied in so the editor never touches the AudioEngine.
+    void set_audio_envelope(const AudioEnvelope& envelope) {
+        audio_envelope_ = envelope;
+    }
+    const AudioEnvelope& audio_envelope() const { return audio_envelope_; }
+    void clear_audio_envelope() { audio_envelope_ = AudioEnvelope{}; }
+    bool has_audio() const { return !audio_envelope_.empty(); }
+
+    // The audio file name (no directory) for display, set by the app after a
+    // successful load.
+    void set_audio_label(const std::string& label) { audio_label_ = label; }
+    const std::string& audio_label() const { return audio_label_; }
+
+    // Playback state the app reports each frame, so the transport buttons show
+    // the right label and the playhead can be drawn on the waveform.
+    void set_audio_playhead(double seconds, bool playing) {
+        audio_playhead_seconds_ = seconds;
+        audio_playing_ = playing;
+    }
+    double audio_playhead_seconds() const { return audio_playhead_seconds_; }
+    bool audio_playing() const { return audio_playing_; }
+
+    // Transport requests raised by the timeline buttons. The app polls these
+    // after draw() and forwards them to its AudioEngine.
+    bool consume_audio_play() {
+        const bool r = audio_play_requested_;
+        audio_play_requested_ = false;
+        return r;
+    }
+    bool consume_audio_pause() {
+        const bool r = audio_pause_requested_;
+        audio_pause_requested_ = false;
+        return r;
+    }
+    bool consume_audio_stop() {
+        const bool r = audio_stop_requested_;
+        audio_stop_requested_ = false;
+        return r;
+    }
+    // True when the user clicked the waveform to scrub; `seconds` receives the
+    // requested playhead.
+    bool consume_audio_seek(double& seconds) {
+        if (!audio_seek_requested_) {
+            return false;
+        }
+        audio_seek_requested_ = false;
+        seconds = audio_seek_seconds_;
+        return true;
+    }
+
+    // Lip sync. The editor owns the settings widgets and the envelope; when the
+    // user clicks Generate it raises a request carrying the settings, and the
+    // app builds the track onto its model clip (3D) or 2D clip. The editor does
+    // not touch the clip itself, so it stays decoupled from the renderer.
+    void set_lipsync_settings(const LipSyncSettings& settings) {
+        lipsync_settings_ = settings;
+    }
+    const LipSyncSettings& lipsync_settings() const {
+        return lipsync_settings_;
+    }
+    bool has_pending_lipsync() const { return has_pending_lipsync_; }
+    LipSyncSettings take_pending_lipsync() {
+        has_pending_lipsync_ = false;
+        return lipsync_settings_;
+    }
+    // True when the request is for the 2D mouth (variant track) rather than the
+    // 3D morph track.
+    bool lipsync_target_2d() const { return lipsync_target_2d_; }
 
     // Set when the 2D Key button records a keyframe for the selected layer, so
     // the app can refresh the pose. Mirrors timeline_changed().
@@ -241,7 +326,8 @@ public:
     // non-default morph weights and bone poses are written, so the file stays
     // small and a diff shows exactly what the user changed.
     Project capture_project(const std::string& model_path,
-                            const std::string& motion_path) const;
+                            const std::string& motion_path,
+                            const std::string& audio_path = std::string()) const;
 
     // Applies a loaded project to the editor's own state (timeline and
     // camera). The model, motion and pose overrides are the app's job, since
@@ -280,6 +366,8 @@ private:
     void draw_properties_panel();
     void draw_morphs_panel();
     void draw_timeline_panel();
+    void draw_audio_waveform(float origin_x, float origin_y, float width,
+                             float height);
     void draw_export_modal();
     void draw_model_tree();
     void draw_bone_properties();
@@ -357,6 +445,27 @@ private:
     bool has_pending_preset_export_ = false;
     std::string pending_preset_import_;
     bool has_pending_preset_import_ = false;
+    std::string pending_audio_;
+    bool has_pending_audio_ = false;
+
+    // Lip-sync request, raised by the Generate button.
+    LipSyncSettings lipsync_settings_;
+    bool has_pending_lipsync_ = false;
+    bool lipsync_target_2d_ = false;
+
+    // Audio transport requests, consumed by the app which owns the engine.
+    bool audio_play_requested_ = false;
+    bool audio_pause_requested_ = false;
+    bool audio_stop_requested_ = false;
+    bool audio_seek_requested_ = false;
+    double audio_seek_seconds_ = 0.0;
+
+    // Envelope + label for the waveform strip, filled by the app after a load.
+    AudioEnvelope audio_envelope_;
+    std::string audio_label_;
+    double audio_playhead_seconds_ = 0.0;
+    bool audio_playing_ = false;
+
     bool timeline_changed_ = false;
     bool layers2d_changed_ = false;
     bool physics_reset_requested_ = false;
@@ -365,6 +474,11 @@ private:
     char path_buffer_[512] = {};
     char vmd_path_buffer_[512] = {};
     char image2d_path_buffer_[512] = {};
+    char audio_path_buffer_[512] = {};
+    // Lip-sync widget state: the morph to drive and the comma-separated list
+    // of open-mouth variant indices for the 2D path.
+    char lipsync_morph_buffer_[128] = {};
+    char lipsync_variants_buffer_[128] = {};
     char project_path_buffer_[512] = {};
     char export_dir_buffer_[512] = {};
     char variant_name_buffer_[128] = {};

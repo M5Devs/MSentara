@@ -28,11 +28,14 @@
 #endif
 
 #include "core/Animation.hpp"
+#include "core/AudioAnalysis.hpp"
 #include "core/Layer2D.hpp"
+#include "core/LipSync.hpp"
 #include "core/Mesh.hpp"
 #include "core/OnionSkin.hpp"
 #include "core/ProjectIO.hpp"
 #include "formats/VmdLoader.hpp"
+#include "platform/AudioEngine.hpp"
 #include "platform/ImageIO.hpp"
 #include "platform/Renderer.hpp"
 #include "platform/SokolConfig.hpp"
@@ -59,6 +62,10 @@ Renderer g_renderer;
 Editor g_editor;
 ModelInstance g_model;
 Scene2DInstance g_scene2d;
+// Owns the audio device and the decoded track. Optional: on a headless machine
+// or when MSENTARA_AUDIO=0 it runs on a virtual clock, so nothing here assumes
+// a device exists.
+AudioEngine g_audio;
 GpuMesh g_cube;
 GpuMesh g_grid;
 GpuMesh g_grid_2d;
@@ -83,6 +90,20 @@ std::string g_project_path;
 // repeatable). Each becomes a cutout layer and the editor switches to 2D mode,
 // so a 2D scene can be driven from a script or the headless smoke test.
 std::vector<std::string> g_image2d_paths;
+
+// An audio file supplied on the command line (--audio <path>). Loaded at
+// startup so a scripted session or the headless smoke test can drive the
+// waveform without touching the File menu.
+std::string g_audio_path;
+
+// A morph name for --lipsync: generate a mouth track from the loaded audio at
+// startup. Lets the headless smoke test exercise the generator end to end.
+std::string g_lipsync_morph;
+
+// Comma-separated open-mouth variant indices for --lipsync-2d. When non-empty,
+// startup lip sync targets the selected 2D layer's sprite variants instead of a
+// 3D morph.
+std::string g_lipsync_2d_variants;
 
 // Start in 2D mode (--2d) even with no image: useful for a scripted 2D export
 // or a project that stores its own mode.
@@ -195,6 +216,120 @@ void load_model(const std::string& path) {
                 g_model.model().rigid_bodies.joints.size());
 }
 
+// Loads an audio file, replacing any previous track, and hands the editor its
+// envelope so the timeline can draw the waveform. Audio is optional, so a
+// decode failure only reports status and leaves any previous track in place.
+void load_audio(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    if (!g_audio.load(path)) {
+        g_editor.set_status("Failed to load audio " + path);
+        std::fprintf(stderr, "MSentara: failed to load audio '%s'\n",
+                     path.c_str());
+        return;
+    }
+
+    const AudioClip& clip = g_audio.clip();
+    // Bucket the envelope at the timeline's frame rate so the waveform lines up
+    // with the dope sheet above it.
+    const double fps = g_editor.timeline().fps > 0.0f
+                           ? static_cast<double>(g_editor.timeline().fps)
+                           : 30.0;
+    const AudioEnvelope env =
+        compute_envelope(clip.samples, clip.sample_rate, fps);
+    g_editor.set_audio_envelope(env);
+
+    // Show just the file name in the timeline, not the whole path.
+    std::string label = path;
+    const std::size_t slash = label.find_last_of("/\\");
+    if (slash != std::string::npos) {
+        label = label.substr(slash + 1);
+    }
+    g_editor.set_audio_label(label);
+
+    g_editor.set_status("Loaded audio " + path);
+    std::printf("MSentara: loaded audio '%s' (%.2fs, %u Hz, %d frames%s)\n",
+                path.c_str(), clip.duration_seconds(), clip.sample_rate,
+                env.frame_count,
+                g_audio.has_device() ? "" : ", no output device");
+}
+
+// Generates lip-sync from the loaded audio envelope and applies it to the
+// model's clip (3D morph track) or the 2D scene's clip (variant track). The
+// track is merged into the existing clip, replacing only the same-named scalar
+// track or variant channel, so lip sync can be added to an imported motion
+// without discarding it.
+void apply_lipsync(const LipSyncSettings& settings, bool target_2d) {
+    const AudioEnvelope& env = g_editor.audio_envelope();
+    if (env.empty()) {
+        g_editor.set_status("Load audio before generating lip sync");
+        return;
+    }
+
+    if (target_2d) {
+        VariantTrack track = generate_variant_lipsync(env, settings);
+        if (track.empty()) {
+            g_editor.set_status("Lip sync needs open-mouth variants");
+            return;
+        }
+        const Layer2D* selected = g_scene2d.scene().selected_layer();
+        const std::string layer_name =
+            selected != nullptr ? selected->name : std::string();
+        if (layer_name.empty()) {
+            g_editor.set_status("Select a 2D layer for lip sync");
+            return;
+        }
+        Layer2DTrack& layer_track = g_scene2d.clip().layer_2d(layer_name);
+        layer_track.name = layer_name;
+        layer_track.variant = std::move(track);
+        g_editor.set_status("Generated 2D lip sync for " + layer_name);
+        std::printf("MSentara: 2D lip sync -> layer '%s'\n", layer_name.c_str());
+        apply_layer_2d_clip(g_scene2d.clip(), g_editor.timeline().current_frame,
+                            g_scene2d.scene());
+        return;
+    }
+
+    ScalarTrack track = generate_morph_lipsync(env, settings);
+    if (track.empty()) {
+        g_editor.set_status("Lip sync needs a morph name");
+        return;
+    }
+    if (!g_model.valid()) {
+        g_editor.set_status("Load a PMX model before 3D lip sync");
+        return;
+    }
+    if (!g_model.has_animation()) {
+        // A model with no motion yet: start a clip that holds just this track,
+        // so apply_animation() runs it.
+        AnimationClip fresh;
+        fresh.name = "lip-sync";
+        fresh.scalar_tracks.push_back(track);
+        g_model.set_clip(std::move(fresh));
+    } else {
+        // Merge into the existing clip: replace the same-named scalar track,
+        // keep every other track so an imported motion survives.
+        AnimationClip& clip = g_model.clip();
+        bool replaced = false;
+        for (ScalarTrack& existing : clip.scalar_tracks) {
+            if (existing.name == track.name) {
+                existing = track;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            clip.scalar_tracks.push_back(track);
+        }
+    }
+    g_editor.set_status("Generated 3D lip sync for morph " + track.name);
+    std::printf("MSentara: lip sync -> morph '%s' (%zu keys)\n",
+                track.name.c_str(), track.keys.size());
+    // Apply at the current frame immediately, so the mouth moves without
+    // waiting for the next timeline scrub.
+    g_model.apply_animation(g_editor.timeline().current_frame);
+}
+
 // Loads a VMD motion onto the currently loaded model, replacing any previous
 // clip, and resizes the timeline to the motion's frame range.
 void load_motion(const std::string& path) {
@@ -259,6 +394,12 @@ void load_project_file(const std::string& path) {
     }
     if (!project.motion_path.empty() && g_model.valid()) {
         load_motion(project.motion_path);
+    }
+    // Audio is independent of the model, so it loads regardless. A project
+    // saved without audio (or whose file has since moved) simply leaves no
+    // track loaded.
+    if (!project.audio_path.empty()) {
+        load_audio(project.audio_path);
     }
 
     // Timeline and camera come from the editor itself.
@@ -478,7 +619,7 @@ void save_project_file(const std::string& path) {
     const std::string motion_path =
         g_model.valid() ? g_model.motion_path() : std::string();
     const Project project =
-        g_editor.capture_project(model_path, motion_path);
+        g_editor.capture_project(model_path, motion_path, g_audio.path());
 
     std::string error;
     if (!save_project(path, project, error)) {
@@ -841,6 +982,48 @@ void init_cb() {
         import_preset(preset);
     }
 
+    // Audio: --audio <path> (or MSENTARA_AUDIO_FILE). Loaded last so the
+    // timeline's frame rate, set by any motion above, is what the envelope is
+    // bucketed at.
+    std::string audio = g_audio_path;
+    if (audio.empty()) {
+        if (const char* env = std::getenv("MSENTARA_AUDIO_FILE")) {
+            audio = env;
+        }
+    }
+    if (!audio.empty()) {
+        load_audio(audio);
+    }
+
+    // --lipsync <morph>: build a mouth track from the loaded audio right away,
+    // so a scripted run or the smoke test exercises the generator without UI.
+    std::string lipsync_morph = g_lipsync_morph;
+    if (lipsync_morph.empty()) {
+        if (const char* env = std::getenv("MSENTARA_LIPSYNC")) {
+            lipsync_morph = env;
+        }
+    }
+    if (!lipsync_morph.empty() && g_editor.has_audio()) {
+        LipSyncSettings settings;
+        settings.morph_name = lipsync_morph;
+        settings.frame_start = g_editor.timeline().frame_start;
+        apply_lipsync(settings, /*target_2d=*/false);
+    }
+
+    // --lipsync-2d <indices>: drive the selected layer's sprite variants.
+    std::string lipsync_2d = g_lipsync_2d_variants;
+    if (lipsync_2d.empty()) {
+        if (const char* env = std::getenv("MSENTARA_LIPSYNC_2D")) {
+            lipsync_2d = env;
+        }
+    }
+    if (!lipsync_2d.empty() && g_editor.has_audio()) {
+        LipSyncSettings settings;
+        settings.frame_start = g_editor.timeline().frame_start;
+        settings.open_variants = parse_variant_indices(lipsync_2d);
+        apply_lipsync(settings, /*target_2d=*/true);
+    }
+
     // Sprite variants: each --variant <layer>:<name>:<path> attaches one named
     // variant image to a layer already in the scene (by name).
     std::vector<std::string> variant_specs = g_variant_specs;
@@ -928,6 +1111,13 @@ void frame_cb() {
     }
     if (g_editor.has_pending_image2d()) {
         add_image_layer2d(g_editor.take_pending_image2d());
+    }
+    if (g_editor.has_pending_audio()) {
+        load_audio(g_editor.take_pending_audio());
+    }
+    if (g_editor.has_pending_lipsync()) {
+        apply_lipsync(g_editor.take_pending_lipsync(),
+                      g_editor.lipsync_target_2d());
     }
     if (g_editor.has_pending_project_open()) {
         load_project_file(g_editor.take_pending_project_open());
@@ -1055,6 +1245,29 @@ void frame_cb() {
         render_scene_into_pass(true);
         g_renderer.end_pass();
     }
+
+    // Audio transport. The editor raises these from the timeline buttons and
+    // the waveform scrubber; forward them to the engine here, outside any
+    // render pass. update() advances the virtual clock when there is no device.
+    if (g_editor.consume_audio_play()) {
+        g_audio.play();
+    }
+    if (g_editor.consume_audio_pause()) {
+        g_audio.pause();
+    }
+    if (g_editor.consume_audio_stop()) {
+        g_audio.stop();
+    }
+    double seek_seconds = 0.0;
+    if (g_editor.consume_audio_seek(seek_seconds)) {
+        g_audio.seek_seconds(seek_seconds);
+    }
+    g_audio.update(static_cast<double>(sapp_frame_duration()));
+
+    // Report the playhead back so the transport label and waveform cursor are
+    // current before the UI reads them this frame.
+    g_editor.set_audio_playhead(g_audio.position_seconds(),
+                                g_audio.is_playing());
 
     // 2) Build the UI (which samples the offscreen texture).
     simgui_frame_desc_t frame_desc = {};
@@ -1225,6 +1438,18 @@ sapp_desc sokol_main(int argc, char* argv[]) {
             g_image2d_paths.push_back(arg.substr(10));
         } else if (arg == "--2d") {
             g_start_mode_2d = true;
+        } else if (arg == "--audio" && i + 1 < argc) {
+            g_audio_path = argv[++i];
+        } else if (arg.rfind("--audio=", 0) == 0) {
+            g_audio_path = arg.substr(8);
+        } else if (arg == "--lipsync" && i + 1 < argc) {
+            g_lipsync_morph = argv[++i];
+        } else if (arg.rfind("--lipsync=", 0) == 0) {
+            g_lipsync_morph = arg.substr(10);
+        } else if (arg == "--lipsync-2d" && i + 1 < argc) {
+            g_lipsync_2d_variants = argv[++i];
+        } else if (arg.rfind("--lipsync-2d=", 0) == 0) {
+            g_lipsync_2d_variants = arg.substr(13);
         } else if (arg == "--preset" && i + 1 < argc) {
             g_preset_path = argv[++i];
         } else if (arg.rfind("--preset=", 0) == 0) {

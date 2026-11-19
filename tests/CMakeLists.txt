@@ -21,6 +21,7 @@ set(MSENTARA_CORE_TESTS
     test_2d
     test_camera
     test_ik_morph
+    test_lipsync
     test_mesh
     test_project
     test_scene

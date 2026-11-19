@@ -30,6 +30,7 @@ Project make_sample() {
     Project p;
     p.model_path = "models/hatsune_miku.pmx";
     p.motion_path = "motions/wave.vmd";
+    p.audio_path = "audio/voice.wav";
     p.frame_start = 3;
     p.frame_end = 180;
     p.fps = 30.0f;
@@ -64,6 +65,7 @@ void test_round_trip_preserves_everything() {
 
     MS_CHECK(loaded.model_path == original.model_path);
     MS_CHECK(loaded.motion_path == original.motion_path);
+    MS_CHECK(loaded.audio_path == original.audio_path);
     MS_CHECK(loaded.frame_start == original.frame_start);
     MS_CHECK(loaded.frame_end == original.frame_end);
     MS_CHECK(nearly(loaded.fps, original.fps));
@@ -140,6 +142,7 @@ void test_minimal_file_uses_defaults() {
         "{\"format\":\"msentara-project\",\"version\":1}", loaded, error), error);
     MS_CHECK(loaded.model_path.empty());
     MS_CHECK(loaded.motion_path.empty());
+    MS_CHECK(loaded.audio_path.empty());
     MS_CHECK(loaded.ik_enabled);
     // Absent from the file, so the backward-compatible default (on) applies.
     MS_CHECK(loaded.physics_enabled);

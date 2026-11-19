@@ -96,6 +96,27 @@ jobs:
               --export out-2d --export-start 0 --export-end 8
           test "$(ls out-2d | wc -l)" -eq 9
 
+      - name: Headless audio smoke run
+        run: |
+          Xvfb :99 -screen 0 1600x900x24 &
+          sleep 2
+          export DISPLAY=:99
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GALLIUM_DRIVER=llvmpipe
+          export MESA_GL_VERSION_OVERRIDE=4.5
+          export MESA_GLSL_VERSION_OVERRIDE=450
+          # Load a generated tone so the waveform strip and audio transport are
+          # exercised, then drive a morph from it. MSENTARA_AUDIO=0 keeps the run
+          # silent (no sound card in CI) and avoids ALSA probing; the engine uses
+          # its virtual clock.
+          python3 scripts/make_test_wav.py test_audio.wav
+          MSENTARA_AUDIO=0 MSENTARA_FRAME_LIMIT=5 ./build/MSentara \
+              --pmx test_model.pmx --audio test_audio.wav --lipsync Smile
+          # The 2D path drives sprite variants from the same envelope.
+          MSENTARA_AUDIO=0 MSENTARA_FRAME_LIMIT=5 ./build/MSentara \
+              --2d --image2d test_layer.png --audio test_audio.wav \
+              --lipsync-2d "1,2"
+
   windows:
     name: Windows (MSVC)
     runs-on: windows-2022

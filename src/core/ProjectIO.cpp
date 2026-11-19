@@ -364,6 +364,7 @@ std::string project_to_json(const Project& project) {
     // project file is the loader's job, so the file stays readable.
     out["model"] = project.model_path;
     out["motion"] = project.motion_path;
+    out["audio"] = project.audio_path;
 
     json timeline;
     timeline["frame_start"] = project.frame_start;
@@ -446,6 +447,9 @@ bool project_from_json(const std::string& text, Project& project,
     project = Project{};
     project.model_path = in.value("model", std::string());
     project.motion_path = in.value("motion", std::string());
+    // Absent in a project saved before audio existed: empty keeps those files
+    // loading unchanged.
+    project.audio_path = in.value("audio", std::string());
 
     if (in.contains("timeline") && in["timeline"].is_object()) {
         const json& timeline = in["timeline"];

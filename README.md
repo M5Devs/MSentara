@@ -136,6 +136,25 @@ given, `MSENTARA_PRESET` a preset path, and `MSENTARA_VARIANT` a single variant
 spec. A project's `editor_mode` reopens the right mode, and the 2D scene,
 tracks, sprite variants and image paths travel with it.
 
+### Audio and lip sync
+
+Load a soundtrack and drive a mouth from it:
+
+```sh
+./build/MSentara --pmx model.pmx --audio voice.wav --lipsync MouthOpen
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--audio <file>` | Load a soundtrack (WAV/MP3/FLAC/OGG) at startup. |
+| `--lipsync <morph>` | Build a 3D morph track from the loaded audio on startup. |
+| `--lipsync-2d <i,j,…>` | Build a variant track for the selected 2D layer from the audio. |
+
+`MSENTARA_AUDIO`, `MSENTARA_LIPSYNC` and `MSENTARA_LIPSYNC_2D` are the
+environment fallbacks. The waveform is drawn along the timeline; **File ▸ Lip
+Sync** (in the import menu) generates a mouth track from the loaded audio for a
+3D morph or, in 2D mode, a layer's open-mouth sprite variants.
+
 ### Offline PNG sequence export
 
 Render a frame range to numbered PNGs without touching the UI, then quit:

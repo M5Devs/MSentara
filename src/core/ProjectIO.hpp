@@ -132,6 +132,10 @@ struct Project {
     std::string model_path;   // .pmx
     std::string motion_path;  // .vmd (may be empty)
 
+    // Audio track the timeline plays and draws (may be empty). Stored as a
+    // path like the model/motion, so the file stays small and readable.
+    std::string audio_path;
+
     // Timeline / playback state.
     int frame_start = 1;
     int frame_end = 250;

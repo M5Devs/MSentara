@@ -59,6 +59,7 @@ add_library(msentara_core STATIC
     src/core/AudioAnalysis.cpp
     src/core/Camera.cpp
     src/core/Layer2D.cpp
+    src/core/LipSync.cpp
     src/core/Mesh.cpp
     src/core/Morph.cpp
     src/core/OnionSkin.cpp
