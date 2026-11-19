@@ -290,3 +290,48 @@ Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
 - **ASan on Xvfb reports ~108 KB "leaked" in `libGLX_mesa`** — that is the
   software GL driver, not our code; a baseline run with no export shows the
   same trace. Judge sanitizer results by whether the stack names project code.
+
+## Windows CI is MinGW-w64, not MSVC — and Pages deploy (commits e5ad2a5, 419c737)
+
+- **The `windows` job named "MSVC" actually compiles with MinGW-w64 GCC**
+  (`C:/mingw64/bin/c++.exe`, CMake prints `GNU 14.2.0` on the `windows-2022`
+  runner). Renamed to `Windows (MinGW-w64)`. Consequences: diagnostics are
+  GCC-style, and a Windows-only failure can be reproduced locally by
+  `apt-get install mingw-w64` + `x86_64-w64-mingw32-g++` (Debian's is also
+  GCC 14, so it matches closely). Do not assume MSVC semantics when debugging
+  this job; MSVC-only traps (`_mkdir`, `_USE_MATH_DEFINES`) still matter
+  because the code should build under both.
+- **`M_PI` is not standard C++**: absent under MinGW's default `-std=c++17`
+  (no `__STRICT_ANSI__` M_PI) and hidden on MSVC without `_USE_MATH_DEFINES`.
+  Use a local `constexpr double kPi = 3.14159265358979323846;` in tests.
+- **`setenv()` is POSIX-only** (no declaration on Windows; `_putenv_s` is the
+  equivalent). `tests/test_audio.cpp` uses a `set_env()` helper that ifdefs
+  on `_WIN32`. `getenv()` is standard and needs no guard.
+- **Fast Windows check without a full cross-build**: compile a single TU with
+  `x86_64-w64-mingw32-g++ -std=c++17 <project warning set> -Werror -I src
+  -I tests -isystem build/_deps/glm-src -isystem build/_deps/nlohmann_json-src/include -c`.
+  The `-isystem` on glm is essential or glm's own `-Wsign-conversion` fires
+  (that is exactly what CMake's SYSTEM marking does).
+- **GitHub Pages deploy** (`deploy-pages` job): needs
+  `permissions: pages: write, id-token: write`, an `environment:
+  github-pages`, and a **non-cancelling** concurrency group (`cancel-in-progress:
+  false`) — `deploy-pages` refuses to run otherwise. Gate with
+  `if: github.ref == 'refs/heads/main'` so PRs never overwrite the live site.
+- **Pages needs `index.html`**: Emscripten emits `MSentara.html`, so CI copies
+  it to `index.html` in a staging dir while `MSentara.js`/`.wasm` keep their
+  names (the JS locates the wasm relative to its own URL, so renaming the HTML
+  is safe). Add a `.nojekyll` or Pages' Jekyll step can filter files.
+  Live at https://m5devs.github.io/MSentara/.
+- **Verifying CI locally**: `gh` is not installed, but
+  `curl -H "Authorization: Bearer $GITHUB_TOKEN"` against
+  `api.github.com/repos/M5Devs/MSentara/actions/runs[/<id>/jobs]` works, and
+  job logs are fetchable at `/actions/jobs/<job_id>/logs`. `actionlint`
+  (single static binary from its GitHub releases) catches workflow mistakes
+  YAML parsing does not.
+- **Web build locally**: emsdk installs into `/tmp/emsdk`; pin **3.1.61** to
+  match CI (`./emsdk install 3.1.61 && ./emsdk activate 3.1.61 && source
+  emsdk_env.sh`). `emcmake cmake ... && cmake --build build-web -j 1` links
+  and emits `MSentara.html/.js/.wasm`. Note the web build is the only one that
+  warns on unused `export_*` members in `Editor.cpp` — the export modal is
+  desktop-only (`#if !defined(__EMSCRIPTEN__)`), so clang's
+  `-Wunused-private-field` fires; harmless (no `-Werror`) and pre-existing.
