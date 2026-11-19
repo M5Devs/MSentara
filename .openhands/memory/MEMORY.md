@@ -393,3 +393,17 @@ The deployed Pages build never rendered. Diagnosis path worth remembering:
 - `EM_ASM({...})` with no variadic argument warns under C++17
   (`-Wc++20-extensions`: "passing no argument for the '...' parameter"). Pass a
   dummy (`EM_ASM({...}, 0)`) to keep the zero-warning policy.
+
+## CI: Linux (gcc) apt flakiness
+
+`Linux (gcc)` failed twice on the same commit with exit code 100 from
+`apt-get install` — "Unable to connect to azure.archive.ubuntu.com" — while
+`Linux (clang)`'s identical apt call succeeded in the same run. That is hosted
+runner network flakiness, not a dependency problem: **check where the log dies
+before assuming a code regression** (`grep '##\[error\]'`; if the last lines are
+`E: Failed to fetch`, CMake never ran). The install step now retries 3× with a
+15 s pause, and the next run was green.
+
+Also note CI runs gcc **and** clang, but the local dev box defaults to clang —
+reproduce a gcc failure with `CC=gcc CXX=g++ cmake -S . -B /tmp/gccbuild -G
+Ninja`. gcc 14.2 builds this tree clean with 16/16 tests.
