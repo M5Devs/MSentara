@@ -97,6 +97,11 @@ public:
     void set_model(ModelInstance* model) { model_ = model; }
     ModelInstance* model() { return model_; }
 
+    // Hides (or restores) the Milestone 0 test cube. The app calls this with
+    // `true` once a --pmx model is loaded, so the cube does not sit between the
+    // character's feet; `false` restores it for the empty scene.
+    void set_default_cube_visible(bool visible);
+
     // The 2D scene the editor edits. Like the model, it is owned by the app.
     void set_scene2d(Scene2DInstance* scene2d) { scene2d_ = scene2d; }
     Scene2DInstance* scene2d() { return scene2d_; }
@@ -312,6 +317,7 @@ private:
     Scene scene_;
     Camera camera_;
     Timeline timeline_;
+    EntityId default_cube_ = kInvalidEntity;
     GizmoMode gizmo_mode_ = GizmoMode::Translate;
     EditorMode mode_ = EditorMode::ThreeD;
 

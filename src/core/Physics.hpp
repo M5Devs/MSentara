@@ -152,6 +152,10 @@ private:
     void resolve_contacts();
     void apply_contact_velocities();
     void integrate_kinematic(const Skeleton& skeleton, const Pose& pose);
+    // Translates every hanging body by its chain anchor's per-frame delta, so a
+    // strand stays attached when its kinematic anchor jumps to a new animated
+    // transform (see the definition for why this matters).
+    void propagate_anchor_motion();
     // Re-derives each dynamic body's orientation from its segment direction and
     // clamps the relative rotation to the joint's angular limits.
     void align_orientations();

@@ -279,8 +279,17 @@ void main() {
     float band = lambert < 0.33 ? 0.45 : (lambert < 0.66 ? 0.72 : 1.0);
 
     vec4 texel = texture(tex, v_uv);
+    // Alpha cutout: PMX hair, eyelashes and accessories carry their shape in
+    // the texture's alpha channel and rely on a discard test rather than
+    // blending (the skinned pipeline has no blend state). Without this the
+    // transparent texels draw as solid blocks. The diffuse alpha folds in too,
+    // so a fully transparent material disappears entirely.
+    float alpha = diffuse.a * texel.a;
+    if (alpha < 0.1) {
+        discard;
+    }
     vec3 albedo = diffuse.rgb * texel.rgb * v_color;
-    frag_color = vec4(albedo * band, diffuse.a * texel.a);
+    frag_color = vec4(albedo * band, alpha);
 }
 )";
 

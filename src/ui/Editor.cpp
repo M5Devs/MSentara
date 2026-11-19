@@ -28,10 +28,22 @@
 #include "ImGuizmo.h"
 #include "platform/SokolConfig.hpp"
 #include "sokol_app.h"
+#include "sokol_gfx.h"
 
 namespace ms {
 
 namespace {
+
+// The 3D viewport is rendered into an offscreen framebuffer, which the panel
+// samples as a texture. On the GL/WebGL backends that framebuffer's origin is
+// bottom-left, so the scene's up direction sits at v = 1; ImGui maps the
+// top-left of the image rect to uv0, so sampling without a flip shows the scene
+// upside-down. The D3D11/Metal render-target origin is top-left and needs no
+// flip.
+bool viewport_flips_v() {
+    const sg_backend backend = sg_query_backend();
+    return backend == SG_BACKEND_GLCORE || backend == SG_BACKEND_GLES3;
+}
 
 // Dockable window identifiers. Stable strings matter: ImGui persists the
 // layout by hashing these names.
@@ -176,16 +188,30 @@ void Editor::setup() {
     camera_.frame(vec3(0.0f), 1.0f);
     camera_.set_view_camera_persp();
 
-    // A test cube the user can immediately grab with the gizmo.
-    const EntityId cube = scene_.create_entity("Cube", EntityType::Mesh);
-    scene_.find(cube)->mesh = "unit_cube";
-    scene_.select(cube);
+    // A test cube the user can immediately grab with the gizmo. Its id is kept
+    // so the app can hide it once a real model is loaded.
+    default_cube_ = scene_.create_entity("Cube", EntityType::Mesh);
+    scene_.find(default_cube_)->mesh = "unit_cube";
+    scene_.select(default_cube_);
 
     const EntityId light = scene_.create_entity("Light", EntityType::Light);
     scene_.find(light)->transform.position = vec3(4.0f, 6.0f, 4.0f);
 
     const EntityId cam = scene_.create_entity("Camera", EntityType::Camera);
     scene_.find(cam)->transform.position = vec3(-5.0f, 3.0f, 5.0f);
+}
+
+void Editor::set_default_cube_visible(bool visible) {
+    Entity* cube = scene_.find(default_cube_);
+    if (cube == nullptr) {
+        return;
+    }
+    cube->visible = visible;
+    // Selection follows visibility: a hidden cube must not keep the gizmo, or
+    // it would draw handles around nothing once a model is loaded.
+    if (!visible && scene_.selected() == default_cube_) {
+        scene_.select(kInvalidEntity);
+    }
 }
 
 void Editor::viewport_rect(float& x, float& y, float& w, float& h) const {
@@ -492,8 +518,12 @@ void Editor::draw_viewport_panel(const RenderTarget& viewport) {
 
     if (open && avail.x > 1.0f && avail.y > 1.0f) {
         if (viewport.valid()) {
+            const ImVec2 uv0 = viewport_flips_v() ? ImVec2(0.0f, 1.0f)
+                                                  : ImVec2(0.0f, 0.0f);
+            const ImVec2 uv1 = viewport_flips_v() ? ImVec2(1.0f, 0.0f)
+                                                  : ImVec2(1.0f, 1.0f);
             ImGui::Image(ImTextureRef(ImTextureID(viewport.imgui_texture_id)),
-                         avail, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+                         avail, uv0, uv1);
         } else {
             ImGui::Dummy(avail);
         }

@@ -18,6 +18,13 @@
 
 namespace ms {
 
+// Registers the UI fonts: ImGui's embedded default plus, when a system CJK font
+// is available, that font merged in so Japanese bone/morph names render as
+// glyphs rather than '?'. Call once after simgui_setup(), before the first
+// frame. A machine without a CJK font is fine; only CJK glyphs are then
+// missing.
+void load_ui_fonts();
+
 // Applies a dark, Blender-flavoured colour scheme and spacing to the current
 // Dear ImGui context. Call once after simgui_setup().
 void apply_blender_dark_theme();

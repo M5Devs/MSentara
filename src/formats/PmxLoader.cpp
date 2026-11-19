@@ -339,10 +339,13 @@ struct Globals {
 };
 
 // MMD is a left-handed, Y-up, Z-forward system; OpenGL/GLM is right-handed.
-// Mirroring Z converts between them. That mirror also reverses triangle
-// orientation, which is exactly what we want: PMX stores clockwise-wound
-// front faces, and our pipelines expect counter-clockwise, so the indices can
-// be used unchanged.
+// Mirroring Z converts between them. PMX stores clockwise-wound front faces in
+// that left-handed space; mirroring Z flips each triangle's orientation, so the
+// indices must be swapped back to counter-clockwise to match the renderer's
+// SG_FACEWINDING_CCW front face. Without the swap the front faces are culled
+// and the model renders inside-out. (Verified by the signed volume of the
+// mirrored mesh: it is negative as loaded and positive once the swap is
+// applied.)
 vec3 to_right_handed(const vec3& v) { return vec3(v.x, v.y, -v.z); }
 
 // The same mirror applied to a rotation quaternion (x, y, z, w) is
@@ -577,15 +580,23 @@ bool read_surfaces(Reader& r, const Globals& globals, MeshData& mesh) {
     mesh.indices.reserve(count);
     const std::int32_t vertex_count =
         static_cast<std::int32_t>(mesh.vertices.size());
-    for (std::size_t i = 0; i < count; ++i) {
-        std::int32_t index = 0;
-        if (!r.index(globals.vertex_index_size, false, index)) {
-            return false;
+    // The Z-mirror in read_vertices flips every triangle's orientation, so a
+    // stored triangle (v0, v1, v2) becomes counter-clockwise only once its last
+    // two vertices are swapped. Emit them in that order to match the CCW front
+    // face the pipelines use.
+    for (std::size_t i = 0; i < count; i += 3) {
+        std::int32_t tri[3] = {0, 0, 0};
+        for (std::int32_t& index : tri) {
+            if (!r.index(globals.vertex_index_size, false, index)) {
+                return false;
+            }
+            if (index < 0 || index >= vertex_count) {
+                return r.fail("surface references a vertex out of range");
+            }
         }
-        if (index < 0 || index >= vertex_count) {
-            return r.fail("surface references a vertex out of range");
-        }
-        mesh.indices.push_back(static_cast<std::uint32_t>(index));
+        mesh.indices.push_back(static_cast<std::uint32_t>(tri[0]));
+        mesh.indices.push_back(static_cast<std::uint32_t>(tri[2]));
+        mesh.indices.push_back(static_cast<std::uint32_t>(tri[1]));
     }
     return true;
 }

@@ -335,13 +335,16 @@ void test_header_and_vertices() {
     MS_CHECK_NEAR(v3.position, vec3(1.0f, 0.0f, -3.0f));
     MS_CHECK_NEAR(v3.uv, vec2(1.0f, 1.0f));
 
-    // Triangle indices and their winding are preserved.
+    // The Z-mirror flips each triangle's orientation, so the loader swaps the
+    // last two vertices of every triangle to keep front faces counter-clockwise
+    // (what the renderer culls against). A stored triangle (a, b, c) therefore
+    // arrives as (a, c, b).
     MS_CHECK(model.mesh.indices[0] == 0u);
-    MS_CHECK(model.mesh.indices[1] == 1u);
-    MS_CHECK(model.mesh.indices[2] == 2u);
+    MS_CHECK(model.mesh.indices[1] == 2u);
+    MS_CHECK(model.mesh.indices[2] == 1u);
     MS_CHECK(model.mesh.indices[3] == 0u);
-    MS_CHECK(model.mesh.indices[4] == 2u);
-    MS_CHECK(model.mesh.indices[5] == 3u);
+    MS_CHECK(model.mesh.indices[4] == 3u);
+    MS_CHECK(model.mesh.indices[5] == 2u);
 }
 
 void test_weights() {

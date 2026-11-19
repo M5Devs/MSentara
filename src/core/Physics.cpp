@@ -482,6 +482,38 @@ void Physics::write_back(const Skeleton& skeleton, Pose& pose) {
     }
 }
 
+// A dynamic strand hangs off a kinematic anchor (hair off the head, a skirt
+// off the hips). The anchor jumps to its new animated transform once per frame,
+// between steps. Without this pass the joint solver would drag the whole strand
+// across that jump within a single substep, and the position-based velocity
+// recovery would read the drag as an enormous velocity, flinging the strand
+// upward (twin-tail hair shooting to the ceiling). Translating every hanging
+// body by its anchor's per-frame delta first keeps the strand rigidly attached,
+// so the recovery only ever sees the strand's own relative motion.
+void Physics::propagate_anchor_motion() {
+    const int count = static_cast<int>(states_.size());
+    for (int i = 0; i < count; ++i) {
+        PhysicsBodyState& state = states_[static_cast<std::size_t>(i)];
+        if (!state.dynamic) {
+            continue;
+        }
+        // Walk up the chain to its root; the root's parent is the kinematic
+        // anchor (or -1). The guard bounds a malformed cycle.
+        int root = state.parent_body;
+        int guard = 0;
+        while (root >= 0 && guard++ <= count &&
+               states_[static_cast<std::size_t>(root)].dynamic) {
+            root = states_[static_cast<std::size_t>(root)].parent_body;
+        }
+        if (root < 0) {
+            continue;
+        }
+        state.position +=
+            states_[static_cast<std::size_t>(root)].position -
+            prev_positions_[static_cast<std::size_t>(root)];
+    }
+}
+
 void Physics::step(const Skeleton& skeleton, Pose& pose, float dt) {
     if (states_.empty() || !enabled_) {
         return;
@@ -490,9 +522,17 @@ void Physics::step(const Skeleton& skeleton, Pose& pose, float dt) {
         return;
     }
 
+    // Snapshot every body's position before the kinematic anchors follow the
+    // new pose; propagate_anchor_motion needs each anchor's per-frame delta, and
+    // the substep loop re-seeds prev_positions_ for its own recovery.
+    for (std::size_t i = 0; i < states_.size(); ++i) {
+        prev_positions_[i] = states_[i].position;
+    }
+
     // Kinematic bodies follow the animated pose, which is constant across the
     // frame's sub-steps.
     integrate_kinematic(skeleton, pose);
+    propagate_anchor_motion();
 
     const float clamped_dt = std::min(dt, 0.1f);  // never simulate a huge jump
     const int substeps = std::max(settings_.substeps, 1);

@@ -180,6 +180,9 @@ void load_model(const std::string& path) {
     if (bounds.valid()) {
         g_editor.camera().frame(bounds.center, bounds.radius);
     }
+    // A loaded model supersedes the Milestone 0 test cube: hide it so it does
+    // not sit between the character's feet.
+    g_editor.set_default_cube_visible(false);
     g_editor.set_status("Loaded " + path);
     std::printf("MSentara: loaded '%s' (%zu vertices, %zu bones, %zu materials, "
                 "%zu morphs, %zu IK chains, %zu rigid bodies, %zu joints)\n",
@@ -757,6 +760,7 @@ void init_cb() {
     // and enabling it without a matching platform backend would break.
     io.IniFilename = nullptr;
 
+    load_ui_fonts();
     apply_blender_dark_theme();
     g_editor.setup();
     g_editor.set_model(&g_model);

@@ -24,6 +24,7 @@
 // The PMX bytes are generated here (no copyrighted asset), and the simulation
 // builds its rig by hand so the expected motion is exact.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -490,6 +491,73 @@ void test_dynamic_vs_dynamic_and_bone_write_back() {
     MS_CHECK(ms::test::nearly(dynamic_bone_y, 0.0f, 1.0e-4f));
 }
 
+void test_moving_anchor_does_not_fling_strand() {
+    // Regression: a hair strand hangs off a kinematic anchor (the head). When
+    // that anchor moves quickly between frames, the joint solver used to drag
+    // the strand across the whole per-frame jump within one sub-step, and the
+    // position-based velocity recovery read that drag as a huge velocity,
+    // shooting the strand upward ("twin-tails flying to the ceiling"). The fix
+    // carries the anchor's per-frame delta into the strand first, so the
+    // recovery only ever sees the strand's own relative motion.
+    //
+    // The strand is laid out straight down with tight joints, and the anchor is
+    // driven on a fast path far larger than the strand's own motion. With the
+    // bug, a body's speed blows up past 20 u/s and it rises well above its rest
+    // position; the fix keeps the speed near the anchor's own and the rise
+    // within the anchor's bob.
+
+    const Skeleton skeleton = make_chain_skeleton();  // root -> hair1 -> hair2
+
+    RigidBodySet bodies;
+    bodies.bodies.push_back(
+        make_body("root_body", 0, vec3(0.0f, 0.0f, 0.0f),
+                  RigidBodyMode::Kinematic, 0.05f));
+    bodies.bodies.push_back(make_body("hair1_body", 1, vec3(0.5f, 0.0f, 0.0f),
+                                      RigidBodyMode::Dynamic, 0.05f));
+    bodies.bodies.push_back(make_body("hair2_body", 2, vec3(1.0f, 0.0f, 0.0f),
+                                      RigidBodyMode::Dynamic, 0.05f));
+    bodies.joints.push_back(make_joint(0, 1, vec3(0.25f, 0.0f, 0.0f), 0.05f));
+    bodies.joints.push_back(make_joint(1, 2, vec3(0.75f, 0.0f, 0.0f), 0.05f));
+
+    Physics physics;
+    physics.build(bodies, skeleton);
+    physics.settings().gravity = vec3(0.0f, -9.81f, 0.0f);
+    physics.settings().ground_y = -50.0f;  // nothing stops the fall
+    physics.reset();
+
+    Pose pose;
+    pose.resize(skeleton.size());
+    evaluate_pose(skeleton, pose);
+
+    const float dt = 1.0f / 60.0f;
+    const float rest_y1 = physics.state(1).position.y;
+    const float rest_y2 = physics.state(2).position.y;
+    float max_speed = 0.0f;
+    float max_rise = 0.0f;
+    for (int frame = 0; frame < 300; ++frame) {
+        const float t = static_cast<float>(frame) * dt;
+        // A fast, large anchor path: the head swinging hard in a dance.
+        pose.delta[0].position = vec3(1.2f * std::sin(t * 9.0f),
+                                      1.5f * std::sin(t * 6.0f), 0.0f);
+        evaluate_pose(skeleton, pose);
+        physics.step(skeleton, pose, dt);
+
+        for (int i = 1; i <= 2; ++i) {
+            max_speed = std::max(max_speed,
+                                 glm::length(physics.state(i).linear_velocity));
+        }
+        max_rise = std::max(max_rise, physics.state(1).position.y - rest_y1);
+        max_rise = std::max(max_rise, physics.state(2).position.y - rest_y2);
+    }
+
+    // The strand may follow the anchor, but its own recovered speed must stay
+    // bounded (the bug pushed it past 20 u/s), and it must not rise above its
+    // rest position by more than the anchor's own 1.5-unit bob (the bug lifted
+    // it ~3.5 units clear of the head).
+    MS_CHECK(max_speed < 4.0f);
+    MS_CHECK(max_rise < 2.0f);
+}
+
 void test_empty_physics_is_inert() {
     const Skeleton skeleton = make_chain_skeleton();
     Physics physics;
@@ -515,6 +583,7 @@ int main() {
     test_ground_plane_stops_a_falling_body();
     test_reset_and_disabled();
     test_dynamic_vs_dynamic_and_bone_write_back();
+    test_moving_anchor_does_not_fling_strand();
     test_empty_physics_is_inert();
     return ms::test::summary("physics");
 }

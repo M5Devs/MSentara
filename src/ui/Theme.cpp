@@ -16,15 +16,71 @@
 
 #include "ui/Theme.hpp"
 
+#include <cstdio>
+
 #include "imgui.h"
 
 namespace ms {
 
 namespace {
+
 ImVec4 rgba(float r, float g, float b, float a = 1.0f) {
     return ImVec4(r, g, b, a);
 }
+
+// Candidate CJK-capable system fonts, in preference order. A PMX model's
+// bone/morph names are stored in Japanese, and ImGui's embedded default font
+// carries only Latin, so without one of these every CJK glyph renders as '?'.
+// The list spans the usual Debian/Ubuntu, Fedora, Arch and macOS locations.
+constexpr const char* kCjkFontCandidates[] = {
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts-droid-fallback/truetype/DroidSansFallback.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+};
+
+// Returns the first candidate font that exists, or nullptr when none does. The
+// UI then keeps ImGui's default font, so a machine without a CJK font still
+// runs; only the CJK glyphs are missing.
+const char* find_cjk_font() {
+    for (const char* path : kCjkFontCandidates) {
+        if (std::FILE* f = std::fopen(path, "rb")) {
+            std::fclose(f);
+            return path;
+        }
+    }
+    return nullptr;
+}
+
+// Registers the default font plus, when one is available, a CJK font merged
+// into it. Merging (rather than replacing) keeps the crisp Latin shapes and
+// adds the CJK ranges, which is what makes Japanese bone names legible.
+void load_fonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontConfig base_cfg;
+    base_cfg.SizePixels = 15.0f;
+    io.Fonts->AddFontDefault(&base_cfg);
+
+    const char* cjk_path = find_cjk_font();
+    if (cjk_path == nullptr) {
+        return;
+    }
+    ImFontConfig merge_cfg;
+    merge_cfg.MergeMode = true;
+    merge_cfg.PixelSnapH = true;
+    // Japanese covers the kana and the ideographs PMX names use; the default
+    // ranges cover the ASCII names an English-authored model stores.
+    io.Fonts->AddFontFromFileTTF(cjk_path, 15.0f, &merge_cfg,
+                                 io.Fonts->GetGlyphRangesJapanese());
+}
+
 }  // namespace
+
+void load_ui_fonts() { load_fonts(); }
 
 void apply_blender_dark_theme() {
     ImGuiStyle& style = ImGui::GetStyle();
