@@ -89,3 +89,21 @@ set_tests_properties(test_physics PROPERTIES
     LABELS "core;formats"
     TIMEOUT 60
 )
+
+# Audio spans core (the envelope analysis) and the platform layer (the
+# AudioEngine, which owns the miniaudio device). Linking the platform library
+# is fine headless: no window or GL context is created, and the engine falls
+# back to a virtual clock when no output device is present.
+add_executable(test_audio test_audio.cpp)
+target_include_directories(test_audio PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_link_libraries(test_audio PRIVATE msentara_platform)
+msentara_set_warnings(test_audio)
+
+add_test(NAME test_audio COMMAND test_audio)
+set_tests_properties(test_audio PROPERTIES
+    LABELS "core;platform"
+    TIMEOUT 60
+)

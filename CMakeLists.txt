@@ -56,6 +56,7 @@ msentara_fetch_dependencies()
 # ---------------------------------------------------------------------------
 add_library(msentara_core STATIC
     src/core/Animation.cpp
+    src/core/AudioAnalysis.cpp
     src/core/Camera.cpp
     src/core/Layer2D.cpp
     src/core/Mesh.cpp
@@ -91,6 +92,7 @@ msentara_set_warnings(msentara_formats)
 # Platform: sokol window, input and graphics wrapper.
 # ---------------------------------------------------------------------------
 add_library(msentara_platform STATIC
+    src/platform/AudioEngine.cpp
     src/platform/ImageIO.cpp
     src/platform/Renderer.cpp
     src/platform/SokolImpl.cpp
@@ -111,6 +113,7 @@ target_link_libraries(msentara_platform PUBLIC
     imgui
     imguizmo
     sokol
+    miniaudio
 )
 msentara_set_warnings(msentara_platform)
 

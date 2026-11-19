@@ -20,6 +20,7 @@
 #   SOKOL_INCLUDE_DIR   - directory containing sokol_app.h / sokol_gfx.h
 #   IMGUI_INCLUDE_DIR   - directory containing imgui.h
 #   IMGUIZMO_INCLUDE_DIR- directory containing ImGuizmo.h
+#   MINIAUDIO_INCLUDE_DIR - directory containing miniaudio.h
 #   NLOHMANN_JSON_INCLUDE_DIR - directory containing nlohmann/json.hpp
 #
 # imgui and sokol ship no CMakeLists.txt, so we add the targets ourselves.
@@ -43,6 +44,7 @@ set(MSENTARA_IMGUI_TAG    "9dbcb2f1cc0e8a3ffac51d7f9d28efdb228db14b" CACHE STRIN
 set(MSENTARA_IMGUIZMO_TAG "105e4fde45e4e74aae8973d98750820ef7aca7e2" CACHE STRING "CedricGuillemet/ImGuizmo revision")
 set(MSENTARA_GLM_TAG      "1.0.1"                                    CACHE STRING "g-truc/glm tag")
 set(MSENTARA_STB_TAG      "9600522de53973336fa033a289858a4354cbb04c" CACHE STRING "nothings/stb revision")
+set(MSENTARA_MINIAUDIO_TAG "0.11.26"                                CACHE STRING "mackron/miniaudio tag")
 set(MSENTARA_JSON_TAG     "v3.11.3"                                  CACHE STRING "nlohmann/json release")
 
 macro(msentara_fetch_dependencies)
@@ -75,6 +77,15 @@ macro(msentara_fetch_dependencies)
         GIT_TAG        ${MSENTARA_STB_TAG}
         SOURCE_SUBDIR  msentara-no-cmake-subdir
     )
+    # miniaudio is a single-header library with no CMakeLists.txt; its tag is a
+    # real branch tip, so a shallow clone is safe. SOURCE_SUBDIR keeps
+    # MakeAvailable from looking for (and failing to find) a CMake project.
+    FetchContent_Declare(miniaudio
+        GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+        GIT_TAG        ${MSENTARA_MINIAUDIO_TAG}
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  msentara-no-cmake-subdir
+    )
     # nlohmann/json is header-only. The release asset is a small `include/`
     # zip, far lighter than cloning the repository's full history, and it
     # carries no CMakeLists.txt so nothing extra is added.
@@ -85,12 +96,13 @@ macro(msentara_fetch_dependencies)
 
     # sokol and imgui ship no CMakeLists.txt, so MakeAvailable populates them
     # without adding a subdirectory; we add the targets ourselves below.
-    FetchContent_MakeAvailable(sokol imgui imguizmo glm stb nlohmann_json)
+    FetchContent_MakeAvailable(sokol imgui imguizmo glm stb miniaudio nlohmann_json)
 
     set(SOKOL_INCLUDE_DIR "${sokol_SOURCE_DIR}" CACHE INTERNAL "sokol include dir")
     set(IMGUI_INCLUDE_DIR "${imgui_SOURCE_DIR}" CACHE INTERNAL "imgui include dir")
     set(IMGUIZMO_INCLUDE_DIR "${imguizmo_SOURCE_DIR}/src" CACHE INTERNAL "ImGuizmo include dir")
     set(STB_INCLUDE_DIR "${stb_SOURCE_DIR}" CACHE INTERNAL "stb include dir")
+    set(MINIAUDIO_INCLUDE_DIR "${miniaudio_SOURCE_DIR}" CACHE INTERNAL "miniaudio include dir")
     set(NLOHMANN_JSON_INCLUDE_DIR "${nlohmann_json_SOURCE_DIR}/include" CACHE INTERNAL "nlohmann/json include dir")
 
     # --- nlohmann/json ----------------------------------------------------
@@ -136,5 +148,28 @@ macro(msentara_fetch_dependencies)
             "${sokol_SOURCE_DIR}"
             "${sokol_SOURCE_DIR}/util"
         )
+    endif()
+
+    # --- miniaudio --------------------------------------------------------
+    # Single-header C library. The implementation is compiled once in
+    # src/platform/MiniaudioImpl.c (it defines MINIAUDIO_IMPLEMENTATION), so
+    # this target is a static library carrying that TU plus the include path.
+    if(NOT TARGET miniaudio)
+        add_library(miniaudio STATIC
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/MiniaudioImpl.c"
+        )
+        target_include_directories(miniaudio SYSTEM PUBLIC
+            "${miniaudio_SOURCE_DIR}"
+        )
+        set_target_properties(miniaudio PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        # Backends pull in these; on Linux miniaudio's ALSA/Pulse paths want
+        # pthread and dl, and the math library for resampling.
+        if(UNIX AND NOT APPLE)
+            find_package(Threads REQUIRED)
+            target_link_libraries(miniaudio PUBLIC Threads::Threads dl m)
+        elseif(APPLE)
+            target_link_libraries(miniaudio PUBLIC "-framework CoreAudio"
+                "-framework AudioToolbox" "-framework CoreFoundation")
+        endif()
     endif()
 endmacro()
