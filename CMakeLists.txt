@@ -160,14 +160,27 @@ if(MSENTARA_WEB)
         # methods are what shell.html's file picker needs to hand bytes over
         # (cwrap/_malloc/_free/HEAPU8). The msentara_upload_* entry points are
         # kept alive by EMSCRIPTEN_KEEPALIVE in main.cpp.
+        #
+        # EXPORTED_FUNCTIONS replaces emscripten's default export list rather
+        # than adding to it, and _main is only exported by that default. Listing
+        # _malloc/_free alone therefore dropped _main, so main() was never
+        # called: the module initialised, but sokol never started, the canvas
+        # was never sized, and the page sat on "Loading MSentara…" forever with
+        # no console error. _main must stay in this list.
         LINK_FLAGS "-sUSE_WEBGL2=1 -sFULL_ES3=1 -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
                     -sALLOW_MEMORY_GROWTH=1 \
                     -sFETCH=1 -sFORCE_FILESYSTEM=1 \
                     -sEXPORTED_RUNTIME_METHODS=cwrap,HEAPU8 \
-                    -sEXPORTED_FUNCTIONS=_malloc,_free \
+                    -sEXPORTED_FUNCTIONS=_main,_malloc,_free \
                     -sEXIT_RUNTIME=0 -sSTACK_SIZE=1048576 \
                     --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/cmake/web/shell.html"
     )
+    # --shell-file is passed through LINK_FLAGS, which CMake does not scan for
+    # file dependencies, so editing the shell would otherwise leave a stale
+    # .html behind ("ninja: no work to do"). Declaring it explicitly makes the
+    # link rerun when the shell changes.
+    set_property(TARGET MSentara APPEND PROPERTY
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/web/shell.html)
 else()
     # Desktop GL: the sokol GL backend dlopens libGL, so link the system GL
     # only for the platform-level X11/EGL symbols it needs.

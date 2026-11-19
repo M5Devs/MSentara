@@ -87,6 +87,42 @@
   {{{ SCRIPT }}}
 
   <script>
+  // Eruda is an in-page developer console: it surfaces console output, uncaught
+  // errors, failed network requests and the WebGL context on a device where
+  // there is no devtools (a phone, a tablet, a locked-down Chromebook). The web
+  // build is otherwise silent when it fails — a shader that will not compile or
+  // a module that never starts just leaves a blank canvas — so the panel is
+  // loaded unconditionally. It is a small, self-contained script and it only
+  // appears as a floating button until opened.
+  //
+  // The CDN tag is deliberately not `defer`red behind the app: if the request
+  // fails (offline, blocked CDN, strict CSP) the onerror handler simply carries
+  // on, so a missing debug tool can never take the application down with it.
+  (function () {
+    function boot() {
+      if (typeof window.eruda === 'undefined') {
+        return;
+      }
+      window.eruda.init({
+        // Start collapsed: the app's own UI is the point, and the panel opens
+        // from the floating button when something needs looking at.
+        defaults: { displaySize: 50, theme: 'Dark' }
+      });
+    }
+
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/eruda@3.4.3/eruda.min.js';
+    script.async = true;
+    script.crossOrigin = 'anonymous';
+    script.onload = boot;
+    script.onerror = function () {
+      console.warn('MSentara: Eruda console unavailable (CDN blocked?)');
+    };
+    document.head.appendChild(script);
+  })();
+  </script>
+
+  <script>
   // Bridges the file picker to the C++ importer. The native drag-and-drop path
   // (sokol's FILES_DROPPED event) needs no help here; this only covers the
   // click-to-choose fallback, which the browser implements as a plain file
@@ -137,15 +173,25 @@
         // Clear so choosing the same file twice fires 'change' again.
         picker.value = '';
       });
-      // The app replaces the loading overlay once the GL context is up; that
-      // is the moment to dim the bar so it stops covering the viewport.
+      // The app signals that the GL context is up and the first frame is about
+      // to be drawn; that is the moment to hide the loading overlay and dim the
+      // import bar. main.cpp dispatches 'msentara-ready' from init_cb and also
+      // sets window.__msentaraReady, because the bundle is loaded with `async`
+      // and may reach init_cb before this listener is attached.
       const status = document.getElementById('status');
-      if (status) {
-        status.addEventListener('msentara-ready', function () {
-          bar.classList.add('dim');
-        });
+      function markReady() {
+        if (status) {
+          status.style.display = 'none';
+        }
+        bar.classList.add('dim');
       }
-      // Belt and braces: dim on a timer even if the event above is missed.
+      if (status) {
+        status.addEventListener('msentara-ready', markReady);
+      }
+      if (window.__msentaraReady) {
+        markReady();
+      }
+      // Belt and braces: dim on a timer even if the signal above is missed.
       setTimeout(function () { bar.classList.add('dim'); }, 3000);
     }
 

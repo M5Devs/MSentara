@@ -1141,6 +1141,21 @@ void init_cb() {
         request.path = path;
         add_layer_variant(request);
     }
+
+#if defined(__EMSCRIPTEN__)
+    // shell.html shows a "Loading MSentara…" overlay and dims the import bar
+    // once the app is running. Nothing else signals that transition, so it is
+    // announced here: the GL context is up and the first frame is about to be
+    // drawn. Without this the overlay stays on screen forever even though the
+    // app renders underneath it.
+    EM_ASM({
+        window.__msentaraReady = true;
+        const status = document.getElementById('status');
+        if (status) {
+            status.dispatchEvent(new Event('msentara-ready'));
+        }
+    }, 0);
+#endif
 }
 
 void frame_cb() {

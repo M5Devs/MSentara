@@ -76,6 +76,12 @@ constexpr int kAttrColor = 2;
 // inputs and fragment outputs, which needs GLSL 4.20 or the
 // GL_ARB_separate_shader_objects extension, so 4.10 is the floor that works
 // everywhere without extra extensions.
+//
+// Varyings deliberately carry no location qualifier: GLSL ES 3.00 only allows
+// `layout(location=...)` on program inputs and outputs, and rejects it on
+// vertex outputs and fragment inputs ("invalid layout qualifier"). Desktop
+// GLSL would accept it there, but name-based matching links the stages on both
+// platforms, so the two stay identical and the web shaders compile.
 #if defined(__EMSCRIPTEN__)
 constexpr const char* kGlslPrologue =
     "#version 300 es\n"
@@ -101,8 +107,8 @@ layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;
 
-layout(location = 0) out vec3 v_normal;
-layout(location = 1) out vec3 v_color;
+out vec3 v_normal;
+out vec3 v_color;
 
 void main() {
     gl_Position = mvp * vec4(position, 1.0);
@@ -114,8 +120,8 @@ void main() {
 )";
 
 const char* const kFragmentBody = R"(
-layout(location = 0) in vec3 v_normal;
-layout(location = 1) in vec3 v_color;
+in vec3 v_normal;
+in vec3 v_color;
 
 layout(location = 0) out vec4 frag_color;
 
@@ -248,9 +254,9 @@ layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;
 layout(location = 3) in vec2 uv;
 
-layout(location = 0) out vec3 v_normal;
-layout(location = 1) out vec2 v_uv;
-layout(location = 2) out vec3 v_color;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec3 v_color;
 
 void main() {
     gl_Position = mvp * vec4(position, 1.0);
@@ -264,9 +270,9 @@ const char* const kSkinnedFragmentBody = R"(
 uniform vec4 diffuse;
 uniform sampler2D tex;
 
-layout(location = 0) in vec3 v_normal;
-layout(location = 1) in vec2 v_uv;
-layout(location = 2) in vec3 v_color;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec3 v_color;
 
 layout(location = 0) out vec4 frag_color;
 
@@ -413,7 +419,7 @@ layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;
 layout(location = 3) in vec2 uv;
 
-layout(location = 0) out vec2 v_uv;
+out vec2 v_uv;
 
 void main() {
     gl_Position = mvp * vec4(position, 1.0);
@@ -425,7 +431,7 @@ const char* const kSpriteFragmentBody = R"(
 uniform vec4 tint;
 uniform sampler2D tex;
 
-layout(location = 0) in vec2 v_uv;
+in vec2 v_uv;
 
 layout(location = 0) out vec4 frag_color;
 
