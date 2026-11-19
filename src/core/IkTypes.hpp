@@ -23,9 +23,9 @@
 namespace ms {
 
 // One link of a CCD-IK chain: a bone the solver is allowed to rotate to bring
-// the effector onto the target. `enable_limit` clamps the link's local Euler
-// angles to [limit_min, limit_max] (radians), which is how a knee is stopped
-// from bending backwards.
+// the chain end (effector) onto the controller (goal). `enable_limit` clamps
+// the link's local Euler angles to [limit_min, limit_max] (radians), which is
+// how a knee is stopped from bending backwards.
 struct IkLink {
     int bone = -1;
     bool enable_limit = false;
@@ -33,16 +33,23 @@ struct IkLink {
     vec3 limit_max{0.0f, 0.0f, 0.0f};  // radians
 };
 
-// A CCD-IK chain, expressed the way PMX stores it: the bone that carries the
-// solver (the effector, e.g. an ankle), the bone it reaches for (the target,
-// e.g. an IK handle), the iteration budget, a per-step angle clamp, and the
-// links the solver may rotate.
+// A CCD-IK chain: the bone the solver moves (the effector, the chain end), the
+// bone it must bring that effector onto (the goal, the IK controller / handle),
+// the iteration budget, a per-step angle clamp, and the links the solver may
+// rotate.
+//
+// PMX stores the controller as the bone carrying the IK flag and the chain end
+// as the solver's "target index", and MMD moves the chain end toward the
+// controller. Naming the two the other way round silently inverts the solve:
+// a hair chain then flies *away* from its handle and curls up into a U instead
+// of hanging. So the chain end is `effector_bone` and the controller is
+// `goal_bone`.
 //
 // Kept format-neutral: a hand-built rig or a future 2D chain fills the same
 // structure.
 struct IkSolver {
-    int ik_bone = -1;      // effector bone
-    int target_bone = -1;  // goal bone
+    int goal_bone = -1;      // IK controller / handle (PMX flag carrier)
+    int effector_bone = -1;  // chain end that moves (PMX "target index")
     int iterations = 1;
     // Per-step clamp on how far a link may rotate in one iteration (radians).
     // PMX stores a "limit radian"; a non-positive value means "no clamp".

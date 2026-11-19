@@ -311,6 +311,137 @@ void build_model(PmxBuilder& b, bool utf16) {
     b.i32(0);
 }
 
+// A PMX with a three-bone IK chain, laid out the way MMD writes one:
+//
+//   hip  (0, 1, 0)   root
+//   knee (0, 0, 0)   child of hip
+//   ankle(0,-1, 0)   child of knee    <- the PMX "target index" (chain end)
+//   ikctl(0.6,-0.8,0) root            <- carries the IK flag (the controller)
+//
+// The solver's target index is the chain end and the flag-carrier is the
+// controller, so the loader must map ankle -> effector_bone and ikctl ->
+// goal_bone. Getting that backwards makes the chain fly away from its
+// controller instead of onto it.
+void build_ik_model(PmxBuilder& b) {
+    const auto text = [&](const std::string& s) { b.text_utf8(s); };
+
+    b.raw("PMX ");
+    b.f32(2.0f);
+    b.u8(8);
+    b.u8(1);  // UTF-8
+    b.u8(0);  // additional vec4
+    for (int i = 0; i < 6; ++i) {
+        b.u8(1);  // every index size = 1 byte
+    }
+    text("IKModel");
+    text("");
+    text("");
+    text("");
+
+    b.i32(0);  // vertices
+    b.i32(0);  // surfaces
+    b.i32(0);  // textures
+    b.i32(0);  // materials
+
+    // --- Bones ---
+    b.i32(4);
+    // hip: root, at (0,1,0).
+    text("hip");
+    text("");
+    b.vec3f(vec3(0.0f, 1.0f, 0.0f));
+    b.i8(-1);
+    b.i32(0);
+    b.u8(0x00);
+    b.u8(0x00);  // no flags
+    b.vec3f(vec3(0.0f, 0.0f, 0.0f));  // tail
+
+    // knee: child of hip, at (0,0,0).
+    text("knee");
+    text("");
+    b.vec3f(vec3(0.0f, 0.0f, 0.0f));
+    b.i8(0);
+    b.i32(0);
+    b.u8(0x00);
+    b.u8(0x00);
+    b.vec3f(vec3(0.0f, -1.0f, 0.0f));  // tail
+
+    // ankle: child of knee, at (0,-1,0). This is the solver's chain end.
+    text("ankle");
+    text("");
+    b.vec3f(vec3(0.0f, -1.0f, 0.0f));
+    b.i8(1);
+    b.i32(0);
+    b.u8(0x00);
+    b.u8(0x00);
+    b.vec3f(vec3(0.0f, -1.0f, 0.0f));  // tail
+
+    // ikctl: root, at (0.6,-0.8,0), carrying the IK flag. Its IK block points
+    // the solver at the ankle (bone index 2) with the knee and hip as links.
+    text("ikctl");
+    text("");
+    b.vec3f(vec3(0.6f, -0.8f, 0.0f));
+    b.i8(-1);
+    b.i32(0);
+    // The flag word is little-endian: 0x0020 (kBoneIk) is low byte 0x20.
+    b.u8(0x20);  // flags low byte: kBoneIk
+    b.u8(0x00);  // flags high byte
+    b.vec3f(vec3(0.0f, -1.0f, 0.0f));  // tail
+    b.i8(2);        // target index -> ankle (the chain end)
+    b.i32(40);      // loop count
+    b.f32(0.0f);    // limit radian (no clamp)
+    b.i32(2);       // link count
+    b.i8(1);        // link 0: knee
+    b.u8(0);        // no limits
+    b.i8(0);        // link 1: hip
+    b.u8(0);        // no limits
+
+    b.i32(0);  // morphs
+    b.i32(0);  // display frames
+    b.i32(0);  // rigid bodies
+    b.i32(0);  // joints
+}
+
+void test_ik_roles_and_solve() {
+    PmxBuilder b;
+    build_ik_model(b);
+    const PmxResult result = parse_pmx(b.data(), b.size());
+    MS_CHECK(result.ok);
+    if (!result.ok) {
+        return;
+    }
+
+    const Skeleton& skeleton = result.model.skeleton;
+    MS_CHECK(skeleton.ik_solvers().size() == 1);
+    if (skeleton.ik_solvers().empty()) {
+        return;
+    }
+    const IkSolver& solver = skeleton.ik_solvers()[0];
+
+    // The chain end (PMX target index) is the effector; the flag-carrier is the
+    // controller. Swapping these curls the chain away from its controller.
+    const int ankle = skeleton.find_bone("ankle");
+    const int ikctl = skeleton.find_bone("ikctl");
+    MS_CHECK(solver.effector_bone == ankle);
+    MS_CHECK(solver.goal_bone == ikctl);
+    MS_CHECK(skeleton.bone(ikctl).ik_solver == 0);
+
+    // Solving must pull the chain end onto the controller.
+    Pose pose;
+    pose.resize(skeleton.size());
+    evaluate_pose_full(skeleton, pose, {}, true);
+    const vec3 effector(pose.global[static_cast<std::size_t>(ankle)][3]);
+    const vec3 goal(pose.global[static_cast<std::size_t>(ikctl)][3]);
+    MS_CHECK_MSG(glm::length(effector - goal) < 0.05f,
+                 "IK chain end did not reach its controller");
+
+    // With IK off the chain end stays at its rest position, far away.
+    Pose fk;
+    fk.resize(skeleton.size());
+    evaluate_pose_full(skeleton, fk, {}, false);
+    MS_CHECK(glm::length(vec3(fk.global[static_cast<std::size_t>(ankle)][3]) -
+                         goal) > 0.2f);
+}
+
 void test_header_and_vertices() {
     PmxBuilder b;
     build_model(b, true);
@@ -575,6 +706,7 @@ int main() {
     test_weights();
     test_materials_and_textures();
     test_bones_and_hierarchy();
+    test_ik_roles_and_solve();
     test_skin_pose_math();
     test_morphs();
     test_utf8_encoding();

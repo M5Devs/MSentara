@@ -352,27 +352,27 @@ std::vector<int> deform_order(const Skeleton& skeleton) {
 // ---------------------------------------------------------------------------
 // CCD-IK
 //
-// One solver rotates its chain's links so the effector (ik_bone) reaches the
-// target bone. This is classic Cyclic Coordinate Descent: for each link, from
-// the tip inward, rotate it so the effector-to-link vector lines up with the
-// target-to-link vector, then repeat up to `iterations` times.
+// One solver rotates its chain's links so the chain end (the effector) reaches
+// the controller (the goal). This is classic Cyclic Coordinate Descent: for
+// each link, from the tip inward, rotate it so the effector-to-link vector
+// lines up with the goal-to-link vector, then repeat up to `iterations` times.
 //
 // Angle limits (a knee bending one way) are enforced by decomposing the link's
 // resulting local rotation into Euler XYZ, clamping each axis to its limit, and
 // recomposing. The per-step clamp keeps a single iteration from snapping the
-// chain around when the target is nearly opposite the effector.
+// chain around when the goal is nearly opposite the effector.
 // ---------------------------------------------------------------------------
 void solve_ik(const Skeleton& skeleton, Pose& pose,
               const std::vector<BoneAnim>& morphs, const IkSolver& solver) {
     const int bone_count = static_cast<int>(skeleton.size());
-    if (solver.ik_bone < 0 || solver.ik_bone >= bone_count ||
-        solver.target_bone < 0 || solver.target_bone >= bone_count ||
+    if (solver.effector_bone < 0 || solver.effector_bone >= bone_count ||
+        solver.goal_bone < 0 || solver.goal_bone >= bone_count ||
         solver.links.empty()) {
         return;
     }
 
-    const std::size_t effector = static_cast<std::size_t>(solver.ik_bone);
-    const std::size_t target = static_cast<std::size_t>(solver.target_bone);
+    const std::size_t effector = static_cast<std::size_t>(solver.effector_bone);
+    const std::size_t goal = static_cast<std::size_t>(solver.goal_bone);
     const float step_clamp =
         (solver.limit_angle > 0.0f) ? solver.limit_angle : kPi;
 
@@ -385,37 +385,37 @@ void solve_ik(const Skeleton& skeleton, Pose& pose,
             const IkLink& link = solver.links[li];
             const int link_bone = link.bone;
             if (link_bone < 0 || link_bone >= bone_count ||
-                link_bone == solver.ik_bone) {
+                link_bone == solver.effector_bone) {
                 continue;  // a link equal to the effector has no defined axis
             }
             const std::size_t lb = static_cast<std::size_t>(link_bone);
 
             const vec3 ik_pos(pose.global[effector][3]);
-            const vec3 target_pos(pose.global[target][3]);
+            const vec3 goal_pos(pose.global[goal][3]);
             const mat4 inv_chain = glm::inverse(pose.global[lb]);
 
             const vec3 chain_ik = vec3(inv_chain * vec4(ik_pos, 1.0f));
-            const vec3 chain_target = vec3(inv_chain * vec4(target_pos, 1.0f));
+            const vec3 chain_goal = vec3(inv_chain * vec4(goal_pos, 1.0f));
 
             const float ik_len = glm::length(chain_ik);
-            const float target_len = glm::length(chain_target);
-            if (ik_len < 1.0e-6f || target_len < 1.0e-6f) {
+            const float goal_len = glm::length(chain_goal);
+            if (ik_len < 1.0e-6f || goal_len < 1.0e-6f) {
                 continue;  // effector on the joint: no rotation defined
             }
             const vec3 ik_dir = chain_ik / ik_len;
-            const vec3 target_dir = chain_target / target_len;
+            const vec3 goal_dir = chain_goal / goal_len;
 
             float angle = std::acos(
-                glm::clamp(glm::dot(target_dir, ik_dir), -1.0f, 1.0f));
+                glm::clamp(glm::dot(goal_dir, ik_dir), -1.0f, 1.0f));
             if (glm::degrees(angle) < 1.0e-3f) {
                 continue;  // already aligned
             }
             angle = glm::clamp(angle, -step_clamp, step_clamp);
 
-            // Rotate the effector direction onto the target direction. The axis
+            // Rotate the effector direction onto the goal direction. The axis
             // is cross(from, to) so a positive angle turns ik_dir toward
-            // target_dir; a zero cross product means they are parallel.
-            vec3 axis = glm::cross(ik_dir, target_dir);
+            // goal_dir; a zero cross product means they are parallel.
+            vec3 axis = glm::cross(ik_dir, goal_dir);
             const float axis_len = glm::length(axis);
             if (axis_len < 1.0e-6f) {
                 continue;  // parallel: any axis works, so do nothing

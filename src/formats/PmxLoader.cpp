@@ -809,7 +809,9 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
                 return false;
             }
             has_ik = true;
-            ik.target_bone = target;
+            // PMX's "target index" is the chain end the solver moves, and the
+            // bone carrying the IK flag is the controller it moves onto.
+            ik.effector_bone = target;
             ik.iterations = (loop_count > 0) ? loop_count : 1;
             ik.limit_angle = limit_radian;
             ik.links.reserve(static_cast<std::size_t>(link_count));
@@ -857,16 +859,17 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
             bone.append_translate = (flags & kBoneInheritTranslation) != 0;
         }
         if (has_ik) {
-            ik.ik_bone = bone_index;
+            ik.goal_bone = bone_index;
             pending_ik.push_back(PendingIk{bone_index, std::move(ik)});
         }
     }
 
-    // Materialise the IK solvers and link each to its effector bone. A target
-    // that does not exist would make the solver a no-op, so it is dropped.
+    // Materialise the IK solvers and link each to the bone carrying its flag.
+    // A chain end that does not exist would make the solver a no-op, so it is
+    // dropped.
     for (PendingIk& pending : pending_ik) {
-        if (pending.solver.target_bone < 0 ||
-            pending.solver.target_bone >= static_cast<std::int32_t>(count)) {
+        if (pending.solver.effector_bone < 0 ||
+            pending.solver.effector_bone >= static_cast<std::int32_t>(count)) {
             continue;
         }
         skeleton.ik_solvers().push_back(std::move(pending.solver));

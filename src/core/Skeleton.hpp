@@ -68,11 +68,12 @@ struct Bone {
     bool append_rotate = false;
     bool append_translate = false;
 
-    // Index into Skeleton::ik_solvers(), or -1. The bone that owns the solver
-    // is the effector (the chain's tip).
+    // Index into Skeleton::ik_solvers(), or -1. This bone carries the solver's
+    // IK flag: it is the controller (the goal) the chain end is driven onto,
+    // not the chain end itself.
     int ik_solver = -1;
 
-    // True when this bone is rotated by a CCD-IK chain (as the effector or as
+    // True when this bone is rotated by a CCD-IK chain (as the chain end or as
     // one of its links). MMD stores a per-node IK rotation, so the evaluation
     // applies `Pose::ik_rotation` on exactly these bones. Derived by
     // Skeleton::compute_rest().

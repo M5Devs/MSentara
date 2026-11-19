@@ -43,11 +43,12 @@ Skeleton make_leg() {
     const int foot = skeleton.add_bone("foot", knee, vec3(0.0f, -1.0f, 0.0f));
     const int handle = skeleton.add_bone("handle", -1, vec3(0.0f, -1.0f, 0.0f));
 
-    // The foot carries the solver; it rotates the hip and knee to reach the
-    // handle. Links are listed tip-first, as PMX stores them.
+    // The foot is the chain end (the effector) and the handle is the controller
+    // (the goal) it is driven onto. Links are listed tip-first, as PMX stores
+    // them.
     IkSolver solver;
-    solver.ik_bone = foot;
-    solver.target_bone = handle;
+    solver.effector_bone = foot;
+    solver.goal_bone = handle;
     solver.iterations = 40;
     solver.limit_angle = 0.0f;  // no per-step clamp
     solver.links.push_back(IkLink{knee, false, vec3(0.0f), vec3(0.0f)});
