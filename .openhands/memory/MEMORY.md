@@ -214,3 +214,30 @@ Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
   truncations + 4000 corruptions under ASan, no crash/OOB/UB). PMX `bone=-1`
   on a rigid body is the legal "no bone" sentinel (`Physics::build` clamps it).
 - Full load→morph→IK→physics→skin loop is ASan+UBSan clean on real data.
+
+## Real-model bug fixes (commit 7ca6015) — durable rules
+
+- **PMX triangle winding**: PMX stores **clockwise** (DirectX) front faces. The
+  MMD→GL Z-mirror (`to_right_handed`, `vec3(x,y,-z)`) flips orientation, so the
+  mirrored indices are CW and `SG_CULLMODE_BACK` culls the real front (model
+  looks inside-out/dark). `PmxLoader::read_surfaces` must emit `v0,v2,v1`
+  (CCW). Check via signed volume of the mirrored mesh (must be positive) or by
+  a single-sided model's mean luminance before/after.
+- **Skinned pipeline has no blend state** → PMX transparency is done by an
+  **alpha cutout** in the skinned FS (`discard` when `diffuse.a*texel.a < 0.1`).
+  Materials with the PMX "no-cull" flag get `SG_CULLMODE_NONE` (double-sided).
+- **Viewport image needs a V flip on GL/GLES3** (`Editor::viewport_flips_v()`):
+  the offscreen framebuffer origin is bottom-left but `ImGui::Image` maps the
+  rect's top-left to `uv0`. The PNG exporter is separate and already flips its
+  `glReadPixels` rows (`Renderer::read_color_pixels`).
+- **Hair/strand physics**: a kinematic anchor teleports each frame; without
+  carrying its per-frame delta into the hanging bodies first, the joint solver
+  drags the strand across the jump in one substep and PBD velocity recovery
+  launches it. `Physics::propagate_anchor_motion()` runs right after
+  `integrate_kinematic` in `step`.
+- **CJK names**: ImGui's default atlas is Latin-only; `load_ui_fonts()`
+  (`src/ui/Theme.cpp`) merges a system CJK TTF. `AddFontFromFileTTF` **asserts**
+  on a missing file, so guard the path with an existence check.
+- Export frames for offline inspection: `MSentara --pmx M --export DIR
+  --export-start N --export-end N`; headless via Xvfb (`DISPLAY=:77`,
+  `LIBGL_ALWAYS_SOFTWARE=1`) + `import -window root`.
