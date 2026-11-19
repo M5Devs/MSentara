@@ -72,9 +72,13 @@ binding, a keyframe easing editor and onion skinning**, and cross-platform CI.
   frames drawn behind the current one, with configurable counts and opacity.
   Ghosts are interactive-only — an offline PNG export always contains the
   current frame alone.
-- **Offline PNG sequence export**: render a frame range to numbered
-  `frame_NNNN.png` files, from **File ▸ Export PNG Sequence…** or the command
-  line, optionally from the motion's camera.
+- **Offline export**: render a frame range either to numbered `frame_NNNN.png`
+  files or to a single **animated GIF**, from **File ▸ Export Frames / GIF…**
+  or the command line, optionally from the motion's camera.
+- **Drag-and-drop import**: drop files onto the window to load a `.pmx` model,
+  `.vmd` motion, audio track, `.msentara` project, `.mschar2d` preset, or images
+  (as 2D layers). On the web, a **Choose files…** button in the page offers the
+  same import, since a browser can refuse an OS drag.
 - **Cross-platform CI** (GitHub Actions): Linux (GCC + Clang), Windows
   (MSVC), and an Emscripten WebGL2 bundle.
 
@@ -155,26 +159,40 @@ environment fallbacks. The waveform is drawn along the timeline; **File ▸ Lip
 Sync** (in the import menu) generates a mouth track from the loaded audio for a
 3D morph or, in 2D mode, a layer's open-mouth sprite variants.
 
-### Offline PNG sequence export
+### Offline export (PNG sequence or animated GIF)
 
-Render a frame range to numbered PNGs without touching the UI, then quit:
+Render a frame range without touching the UI, then quit:
 
 ```sh
+# Numbered PNGs into a directory
 ./build/MSentara --pmx model.pmx --vmd motion.vmd \
     --export out --export-start 0 --export-end 120 --export-camera
+
+# A single animated GIF (the .gif extension selects the format)
+./build/MSentara --pmx model.pmx --vmd motion.vmd \
+    --export-gif preview.gif --export-start 0 --export-end 120
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `--export <dir>` | Output directory (created if missing). Frames are `frame_0000.png`, `frame_0001.png`, … |
+| `--export-gif <file>` | Write one animated GIF instead of a PNG sequence. |
 | `--export-start <n>` | First frame (defaults to the timeline start). |
 | `--export-end <n>` | Last frame, inclusive (defaults to the timeline end). |
 | `--export-camera` | Drive the camera from the motion's camera track. |
 
-Every frame in a sequence is written at the same size — the 3D viewport panel's
-size. The same render is available interactively from **File ▸ Export PNG
-Sequence…**. Offline export is desktop-only (WebGL2 has no synchronous
-framebuffer readback).
+Every frame is written at the same size — the 3D viewport panel's size — so the
+sequence and the GIF both stay consistent. `--export out.gif` is treated as a
+GIF target too, since a directory cannot be named with a `.gif` extension.
+
+The same render is available interactively from **File ▸ Export Frames /
+GIF…**, where the output directory and the GIF path are separate fields. GIF
+frame timing is stored in centiseconds, so the delay is rounded: at the default
+24 fps a frame lasts 4 cs (about 25 fps effective), which is the closest the
+format allows.
+
+Offline export is desktop-only (WebGL2 has no synchronous framebuffer
+readback), as is the GIF encoder.
 
 ### Tests
 

@@ -54,4 +54,47 @@ std::string resolve_texture_path(const std::string& model_dir,
 bool write_png_rgba(const std::string& path, int width, int height,
                     const std::uint8_t* pixels);
 
+// An animated-GIF writer that encodes frames one at a time, so a long export
+// never holds the whole sequence in memory (a 1080p frame is ~8 MB RGBA and a
+// GIF export can be hundreds of frames). The caller renders a frame, calls
+// append(), and calls finish() once at the end.
+//
+// The GIF encoder ignores alpha (it has no alpha channel), so an RGBA buffer is
+// expected and its alpha byte is dropped. `delay_cs` is the per-frame delay in
+// centiseconds; see core/GifExport.hpp for how it is derived from fps.
+class GifWriter {
+public:
+    GifWriter() = default;
+    ~GifWriter();
+    GifWriter(const GifWriter&) = delete;
+    GifWriter& operator=(const GifWriter&) = delete;
+
+    // Opens `path` and writes the GIF header. The frame size is fixed for the
+    // whole animation; every append() must supply the same width/height. Returns
+    // false if the file cannot be created.
+    bool begin(const std::string& path, int width, int height, int delay_cs);
+
+    // Appends one RGBA8 frame (width * height * 4 bytes, top row first). The
+    // first append() fixes the frame size. Returns false on a size mismatch or
+    // a write error.
+    bool append(const std::uint8_t* rgba, int width, int height);
+
+    // Writes the trailer and closes the file. Safe to call more than once; the
+    // destructor calls it if it was not already.
+    bool finish();
+
+    bool is_open() const { return open_; }
+    int frames_written() const { return frames_written_; }
+
+private:
+    // gif.h's GifWriter is a C struct; holding it by value here would expose
+    // that header to every includer. A pointer keeps ImageIO.hpp free of it.
+    struct Impl;
+    Impl* impl_ = nullptr;
+    bool open_ = false;
+    int width_ = 0;
+    int height_ = 0;
+    int frames_written_ = 0;
+};
+
 }  // namespace ms

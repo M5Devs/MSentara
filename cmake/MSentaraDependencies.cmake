@@ -20,6 +20,7 @@
 #   SOKOL_INCLUDE_DIR   - directory containing sokol_app.h / sokol_gfx.h
 #   IMGUI_INCLUDE_DIR   - directory containing imgui.h
 #   IMGUIZMO_INCLUDE_DIR- directory containing ImGuizmo.h
+#   GIFH_INCLUDE_DIR    - directory containing gif.h (animated GIF encoder)
 #   MINIAUDIO_INCLUDE_DIR - directory containing miniaudio.h
 #   NLOHMANN_JSON_INCLUDE_DIR - directory containing nlohmann/json.hpp
 #
@@ -44,6 +45,7 @@ set(MSENTARA_IMGUI_TAG    "9dbcb2f1cc0e8a3ffac51d7f9d28efdb228db14b" CACHE STRIN
 set(MSENTARA_IMGUIZMO_TAG "105e4fde45e4e74aae8973d98750820ef7aca7e2" CACHE STRING "CedricGuillemet/ImGuizmo revision")
 set(MSENTARA_GLM_TAG      "1.0.1"                                    CACHE STRING "g-truc/glm tag")
 set(MSENTARA_STB_TAG      "9600522de53973336fa033a289858a4354cbb04c" CACHE STRING "nothings/stb revision")
+set(MSENTARA_GIFH_TAG     "05dd65662f03f10880070f1a673f271a267b2fe8" CACHE STRING "charlietangora/gif-h revision")
 set(MSENTARA_MINIAUDIO_TAG "0.11.26"                                CACHE STRING "mackron/miniaudio tag")
 set(MSENTARA_JSON_TAG     "v3.11.3"                                  CACHE STRING "nlohmann/json release")
 
@@ -77,6 +79,13 @@ macro(msentara_fetch_dependencies)
         GIT_TAG        ${MSENTARA_STB_TAG}
         SOURCE_SUBDIR  msentara-no-cmake-subdir
     )
+    # gif-h is a single public-domain header (gif.h) with no build system and
+    # no tag history we can shallow-clone, so it is pinned by commit like sokol.
+    FetchContent_Declare(gifh
+        GIT_REPOSITORY https://github.com/charlietangora/gif-h.git
+        GIT_TAG        ${MSENTARA_GIFH_TAG}
+        SOURCE_SUBDIR  msentara-no-cmake-subdir
+    )
     # miniaudio is a single-header library with no CMakeLists.txt; its tag is a
     # real branch tip, so a shallow clone is safe. SOURCE_SUBDIR keeps
     # MakeAvailable from looking for (and failing to find) a CMake project.
@@ -96,14 +105,23 @@ macro(msentara_fetch_dependencies)
 
     # sokol and imgui ship no CMakeLists.txt, so MakeAvailable populates them
     # without adding a subdirectory; we add the targets ourselves below.
-    FetchContent_MakeAvailable(sokol imgui imguizmo glm stb miniaudio nlohmann_json)
+    FetchContent_MakeAvailable(sokol imgui imguizmo glm stb gifh miniaudio nlohmann_json)
 
     set(SOKOL_INCLUDE_DIR "${sokol_SOURCE_DIR}" CACHE INTERNAL "sokol include dir")
     set(IMGUI_INCLUDE_DIR "${imgui_SOURCE_DIR}" CACHE INTERNAL "imgui include dir")
     set(IMGUIZMO_INCLUDE_DIR "${imguizmo_SOURCE_DIR}/src" CACHE INTERNAL "ImGuizmo include dir")
     set(STB_INCLUDE_DIR "${stb_SOURCE_DIR}" CACHE INTERNAL "stb include dir")
+    set(GIFH_INCLUDE_DIR "${gifh_SOURCE_DIR}" CACHE INTERNAL "gif-h include dir")
     set(MINIAUDIO_INCLUDE_DIR "${miniaudio_SOURCE_DIR}" CACHE INTERNAL "miniaudio include dir")
     set(NLOHMANN_JSON_INCLUDE_DIR "${nlohmann_json_SOURCE_DIR}/include" CACHE INTERNAL "nlohmann/json include dir")
+
+    # glm is header-only and does not compile cleanly under -Wconversion /
+    # -Wsign-conversion, so its headers are marked SYSTEM: the diagnostics are
+    # still printed only for our own code. Done here rather than with the
+    # `SYSTEM` keyword on target_link_libraries, which needs CMake 3.25 while
+    # the project still supports 3.20.
+    set_property(TARGET glm APPEND PROPERTY
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${glm_SOURCE_DIR}")
 
     # --- nlohmann/json ----------------------------------------------------
     # Header-only; expose the include directory through a conventional target

@@ -29,6 +29,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// gif-h is a public-domain single-header animated-GIF encoder. Its one
+// implementation lives here, in the same translation unit as the other image
+// writers. The include is quoted, not angled, so CMake's SYSTEM include path
+// (see MSentaraDependencies) suppresses its own warnings.
+#include "gif.h"
+
 namespace ms {
 
 TextureData load_texture_file(const std::string& path) {
@@ -131,6 +137,76 @@ bool write_png_rgba(const std::string& path, int width, int height,
     // stride 0 means "tightly packed", which is what the caller guarantees.
     // stb writes rows top-down, matching the buffer orientation we pass in.
     return stbi_write_png(path.c_str(), width, height, 4, pixels, 0) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Animated GIF writer
+// ---------------------------------------------------------------------------
+
+struct GifWriter::Impl {
+    // Qualified: unqualified `GifWriter` here would name ms::GifWriter (the
+    // enclosing class), not gif.h's C struct.
+    ::GifWriter gif{};
+    int delay_cs = 4;
+};
+
+GifWriter::~GifWriter() {
+    finish();
+    delete impl_;
+    impl_ = nullptr;
+}
+
+bool GifWriter::begin(const std::string& path, int width, int height,
+                      int delay_cs) {
+    finish();
+    if (path.empty() || width <= 0 || height <= 0) {
+        return false;
+    }
+    if (impl_ == nullptr) {
+        impl_ = new Impl();
+    }
+    impl_->delay_cs = delay_cs > 0 ? delay_cs : 1;
+    // GifBegin writes the header; a failure leaves no usable file behind.
+    if (!GifBegin(&impl_->gif, path.c_str(),
+                  static_cast<uint32_t>(width),
+                  static_cast<uint32_t>(height),
+                  static_cast<uint32_t>(impl_->delay_cs))) {
+        return false;
+    }
+    open_ = true;
+    width_ = width;
+    height_ = height;
+    frames_written_ = 0;
+    return true;
+}
+
+bool GifWriter::append(const std::uint8_t* rgba, int width, int height) {
+    if (!open_ || impl_ == nullptr || rgba == nullptr) {
+        return false;
+    }
+    // Every frame must match the size the header declared, or the GIF decoder
+    // reads the wrong number of pixels.
+    if (width != width_ || height != height_) {
+        return false;
+    }
+    if (GifWriteFrame(&impl_->gif, rgba, static_cast<uint32_t>(width),
+                      static_cast<uint32_t>(height),
+                      static_cast<uint32_t>(impl_->delay_cs)) == 0) {
+        return false;
+    }
+    ++frames_written_;
+    return true;
+}
+
+bool GifWriter::finish() {
+    if (!open_) {
+        return false;
+    }
+    open_ = false;
+    if (impl_ != nullptr) {
+        GifEnd(&impl_->gif);
+    }
+    return true;
 }
 
 }  // namespace ms

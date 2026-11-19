@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -26,9 +27,16 @@
 #if defined(_WIN32)
 #include <direct.h>
 #endif
+#if defined(__EMSCRIPTEN__)
+// EMSCRIPTEN_KEEPALIVE (used by the shell.html file-picker entry points) and
+// the MEMFS helpers live in emscripten.h.
+#include <emscripten.h>
+#endif
 
 #include "core/Animation.hpp"
 #include "core/AudioAnalysis.hpp"
+#include "core/DropRouter.hpp"
+#include "core/GifExport.hpp"
 #include "core/Layer2D.hpp"
 #include "core/LipSync.hpp"
 #include "core/Mesh.hpp"
@@ -122,6 +130,10 @@ std::vector<std::string> g_variant_specs;
 // frame range once the window and viewport exist, then quit. Used for
 // scripted/CI rendering and for the export smoke test.
 std::string g_export_dir;
+// A --export-gif <path> target. Like --export it triggers an offline export at
+// startup, but encodes every frame into one animated GIF instead of a PNG
+// sequence. Takes precedence over --export when both are given.
+std::string g_export_gif;
 int g_export_start = -1;
 int g_export_end = -1;
 bool g_export_use_camera = false;
@@ -719,6 +731,26 @@ struct ExportSession {
     int width = 0;   // pinned for the whole sequence so every PNG matches
     int height = 0;
     std::string message;
+    // Set for a GIF export: the encoder is opened on the first frame (once the
+    // pinned size is known) and finished after the last one. A PNG export
+    // leaves it closed and writes one file per frame instead.
+    GifWriter gif;
+    bool gif_open = false;
+
+    // GifWriter owns an open file, so the session cannot be value-assigned;
+    // a fresh export clears the bookkeeping in place instead.
+    void reset() {
+        gif.finish();
+        gif_open = false;
+        request = ExportRequest{};
+        active = false;
+        finished = false;
+        frame = 0;
+        written = 0;
+        width = 0;
+        height = 0;
+        message.clear();
+    }
 };
 
 ExportSession g_export;
@@ -747,11 +779,11 @@ bool ensure_directory(const std::string& dir) {
 }
 
 void start_export(const ExportRequest& request) {
-    g_export = ExportSession{};
+    g_export.reset();
     g_export.request = request;
-    if (request.directory.empty()) {
+    if (request.directory.empty() && request.gif_path.empty()) {
         g_export.finished = true;
-        g_export.message = "Export: no output directory given";
+        g_export.message = "Export: no output directory or GIF path given";
         return;
     }
     if (!g_viewport.valid()) {
@@ -759,8 +791,10 @@ void start_export(const ExportRequest& request) {
         g_export.message = "Export: viewport target is not ready";
         return;
     }
-    // Create the output directory if it does not exist yet.
-    if (!ensure_directory(request.directory)) {
+    // A PNG sequence writes into a directory; create it if it is missing. A
+    // GIF is a single file, so its directory is left to the user and a bad
+    // path fails at the first frame's open() instead.
+    if (!request.is_gif() && !ensure_directory(request.directory)) {
         g_export.finished = true;
         g_export.message = "Export: cannot create " + request.directory;
         return;
@@ -768,7 +802,7 @@ void start_export(const ExportRequest& request) {
     g_export.frame = std::min(request.frame_start, request.frame_end);
     // An explicit size overrides the viewport panel; otherwise the export uses
     // whatever size the panel currently has. Either way the size is pinned for
-    // the whole sequence so every PNG matches.
+    // the whole sequence so every PNG (or GIF frame) matches.
     if (request.width > 0 && request.height > 0) {
         g_renderer.resize_render_target(g_viewport, request.width,
                                         request.height);
@@ -779,7 +813,9 @@ void start_export(const ExportRequest& request) {
     g_export.height = g_viewport.height;
     g_export.active = true;
     g_export.message = "Exporting...";
-    g_editor.set_status("Exporting to " + request.directory + "...");
+    g_editor.set_status(request.is_gif()
+                            ? "Exporting GIF to " + request.gif_path + "..."
+                            : "Exporting to " + request.directory + "...");
 }
 
 // Advances the export by one frame: evaluates the pose and (when enabled) the
@@ -849,15 +885,43 @@ bool step_export() {
         return false;
     }
 
-    char name[64];
-    std::snprintf(name, sizeof(name), "frame_%04d.png", frame);
-    const std::string path = g_export.request.directory + "/" + name;
-    if (!write_png_rgba(path, g_export.width, g_export.height,
-                        g_export_pixels.data())) {
-        g_export.active = false;
-        g_export.finished = true;
-        g_export.message = "Export: failed to write " + path;
-        return false;
+    if (g_export.request.is_gif()) {
+        // Open the encoder on the first frame, now that the size is pinned.
+        // Opening here rather than in start_export() means a bad path reports
+        // as a first-frame failure, the same as a PNG write failure.
+        if (!g_export.gif_open) {
+            const int delay = gif_delay_centiseconds(g_export.request.fps);
+            if (!g_export.gif.begin(g_export.request.gif_path, g_export.width,
+                                    g_export.height, delay)) {
+                g_export.active = false;
+                g_export.finished = true;
+                g_export.message =
+                    "Export: cannot create " + g_export.request.gif_path;
+                return false;
+            }
+            g_export.gif_open = true;
+        }
+        if (!g_export.gif.append(g_export_pixels.data(), g_export.width,
+                                 g_export.height)) {
+            g_export.gif.finish();
+            g_export.gif_open = false;
+            g_export.active = false;
+            g_export.finished = true;
+            g_export.message =
+                "Export: failed to encode frame into " + g_export.request.gif_path;
+            return false;
+        }
+    } else {
+        char name[64];
+        std::snprintf(name, sizeof(name), "frame_%04d.png", frame);
+        const std::string path = g_export.request.directory + "/" + name;
+        if (!write_png_rgba(path, g_export.width, g_export.height,
+                            g_export_pixels.data())) {
+            g_export.active = false;
+            g_export.finished = true;
+            g_export.message = "Export: failed to write " + path;
+            return false;
+        }
     }
 
     ++g_export.written;
@@ -865,8 +929,18 @@ bool step_export() {
     if (g_export.frame > last) {
         g_export.active = false;
         g_export.finished = true;
+        if (g_export.gif_open) {
+            // The trailer (0x3B) is what makes the file a complete animation.
+            g_export.gif.finish();
+            g_export.gif_open = false;
+        }
+        const std::string target = g_export.request.is_gif()
+                                       ? g_export.request.gif_path
+                                       : g_export.request.directory;
         g_export.message = "Exported " + std::to_string(g_export.written) +
-                           " frames to " + g_export.request.directory;
+                           (g_export.request.is_gif() ? " GIF frames to "
+                                                      : " frames to ") +
+                           target;
     } else if (g_export.written % 30 == 0) {
         g_editor.set_status("Exporting frame " + std::to_string(g_export.frame) +
                             " / " + std::to_string(last) + "...");
@@ -1142,10 +1216,22 @@ void frame_cb() {
     if (viewport_ready && !g_export.active && g_editor.has_pending_export()) {
         start_export(g_editor.take_pending_export());
     }
-    if (viewport_ready && !g_export_done && !g_export_dir.empty()) {
+    // A command-line export (--export or --export-gif) fires once, as soon as
+    // the viewport has a size to render at. --export-gif wins when both are
+    // given: one animated file is the more specific request.
+    const bool cli_export_pending =
+        !g_export_dir.empty() || !g_export_gif.empty();
+    if (viewport_ready && !g_export_done && cli_export_pending) {
         g_export_done = true;
         ExportRequest request;
         request.directory = g_export_dir;
+        request.gif_path = g_export_gif;
+        // `--export clip.gif` is unambiguous: a directory cannot be named with
+        // a .gif extension, so treat it as the GIF target.
+        if (request.gif_path.empty() && has_gif_extension(request.directory)) {
+            request.gif_path = request.directory;
+            request.directory.clear();
+        }
         request.frame_start = (g_export_start >= 0) ? g_export_start
                                                     : g_editor.timeline().frame_start;
         request.frame_end = (g_export_end >= 0) ? g_export_end
@@ -1166,8 +1252,8 @@ void frame_cb() {
         step_export();
         if (g_export.finished) {
             finish_export();
-            // A command-line export quits as soon as its sequence is done.
-            if (!g_export_dir.empty()) {
+            // A command-line export quits as soon as its output is done.
+            if (!g_export_dir.empty() || !g_export_gif.empty()) {
                 sapp_request_quit();
             }
         }
@@ -1354,7 +1440,300 @@ void apply_camera_navigation() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Drag-and-drop import
+//
+// The router in core decides what each dropped file *is* (by extension); this
+// section decides what to *do* with it, in a fixed order so a multi-file drop
+// behaves predictably:
+//
+//   1. A project supersedes everything: it names its own model, motion and
+//      audio, so loading anything else from the same drop would be undone.
+//   2. Otherwise the first model, motion and audio each load once (loading a
+//      second model would just replace the first).
+//   3. Every 2D character preset in the drop is imported.
+//   4. Images become 2D layers — but only when the drop carried no model, so
+//      dropping "model.pmx + body.png + face.png" loads the model instead of
+//      also scattering its textures across the 2D scene.
+//   5. Anything else is reported and skipped.
+//
+// The same function serves both platforms: on the web each fetched file is
+// written into the Emscripten MEMFS first, so the loaders receive an ordinary
+// path and need no web-specific code of their own.
+void route_dropped_paths(const std::vector<std::string>& paths) {
+    if (paths.empty()) {
+        return;
+    }
+    // core decides *what* to do with the drop; this only carries the plan out,
+    // because loading is what needs the renderer.
+    const DropPlan plan = plan_drop(paths);
+
+    if (plan.project >= 0) {
+        load_project_file(paths[static_cast<std::size_t>(plan.project)]);
+        if (paths.size() > 1) {
+            g_editor.set_status("Opened project " +
+                                paths[static_cast<std::size_t>(plan.project)] +
+                                "; other dropped files ignored");
+        }
+        return;
+    }
+
+    // Report what the plan drops, so a multi-file drop that silently ignores a
+    // second model is visible in the log rather than merely absent.
+    for (const std::string& path : paths) {
+        const DropKind kind = classify_drop(path);
+        const bool extra = (kind == DropKind::Unknown) ||
+                           (kind == DropKind::Model && plan.model >= 0 &&
+                            path != paths[static_cast<std::size_t>(plan.model)]) ||
+                           (kind == DropKind::Motion && plan.motion >= 0 &&
+                            path != paths[static_cast<std::size_t>(plan.motion)]) ||
+                           (kind == DropKind::Audio && plan.audio >= 0 &&
+                            path != paths[static_cast<std::size_t>(plan.audio)]);
+        if (extra) {
+            std::fprintf(stderr, "MSentara: drop: ignoring '%s' (%s)\n",
+                         path.c_str(), drop_kind_name(kind));
+        }
+    }
+
+    if (plan.model >= 0) {
+        load_model(paths[static_cast<std::size_t>(plan.model)]);
+    }
+    if (plan.motion >= 0) {
+        load_motion(paths[static_cast<std::size_t>(plan.motion)]);
+    }
+    if (plan.audio >= 0) {
+        load_audio(paths[static_cast<std::size_t>(plan.audio)]);
+    }
+
+    int presets = 0;
+    int images = 0;
+    for (const std::string& path : paths) {
+        switch (classify_drop(path)) {
+            case DropKind::Char2DPreset:
+                import_preset(path);
+                ++presets;
+                break;
+            case DropKind::Image:
+                if (plan.images_become_layers) {
+                    add_image_layer2d(path);
+                }
+                ++images;
+                break;
+            default:
+                break;
+        }
+    }
+
+    std::vector<std::string> parts;
+    if (plan.model >= 0) {
+        parts.emplace_back("model");
+    }
+    if (plan.motion >= 0) {
+        parts.emplace_back("motion");
+    }
+    if (plan.audio >= 0) {
+        parts.emplace_back("audio");
+    }
+    if (plan.images_become_layers && images > 0) {
+        parts.emplace_back(std::to_string(images) + " image(s) as 2D layers");
+    } else if (images > 0) {
+        parts.emplace_back(std::to_string(images) + " model texture(s)");
+    }
+    if (presets > 0) {
+        parts.emplace_back(std::to_string(presets) + " 2D preset(s)");
+    }
+
+    std::string summary = "Dropped " + std::to_string(paths.size()) +
+                          (paths.size() == 1 ? " file" : " files");
+    if (parts.empty()) {
+        summary += ": no supported files";
+    } else {
+        summary += ": loaded ";
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            summary += (i == 0 ? "" : ", ") + parts[i];
+        }
+    }
+    if (plan.ignored > 0) {
+        summary += " (" + std::to_string(plan.ignored) + " ignored)";
+    }
+    g_editor.set_status(summary);
+    std::printf("MSentara: %s\n", summary.c_str());
+}
+
+#if defined(__EMSCRIPTEN__)
+// ---------------------------------------------------------------------------
+// Web file import
+//
+// A browser never hands a program a path: a drop yields an opaque file handle,
+// and a <input type="file"> yields the same. Both routes therefore fetch the
+// bytes into memory, write them into the Emscripten MEMFS, and then call the
+// same route_dropped_paths() the desktop build uses. Every file in one batch
+// lands in a single fresh directory so a model and the textures that travelled
+// with it still resolve relative to each other.
+//
+// Two entry points feed the staging area:
+//   * begin_web_drop()      — a native browser drop (sokol's async fetch API).
+//   * msentara_upload_*()   — the shell.html file picker (JS calls in directly).
+// ---------------------------------------------------------------------------
+
+std::vector<std::string> g_web_paths;   // files staged for the current batch
+std::string g_web_dir;                  // MEMFS directory for this batch
+int g_web_pending = 0;                  // fetches still in flight
+int g_web_serial = 0;
+
+// Starts a new batch of `expected` files and opens its MEMFS directory.
+void web_stage_begin(int expected) {
+    g_web_dir = "/tmp/msentara_drop_" + std::to_string(++g_web_serial);
+    mkdir(g_web_dir.c_str(), 0777);
+    g_web_paths.clear();
+    g_web_pending = expected;
+}
+
+// Writes one file into the batch directory. Returns the path written, or an
+// empty string when the file could not be created.
+std::string web_stage_write(const std::string& name, const void* data,
+                            std::size_t size) {
+    // A dropped name may contain a directory component on some browsers; keep
+    // only the final segment so nothing escapes the batch directory.
+    const std::size_t slash = name.find_last_of("/\\");
+    const std::string leaf =
+        (slash == std::string::npos) ? name : name.substr(slash + 1);
+    if (leaf.empty()) {
+        return {};
+    }
+    const std::string path = g_web_dir + "/" + leaf;
+    std::FILE* out = std::fopen(path.c_str(), "wb");
+    if (out == nullptr) {
+        std::fprintf(stderr, "MSentara: web import: cannot write '%s'\n",
+                     path.c_str());
+        return {};
+    }
+    if (size > 0) {
+        std::fwrite(data, 1, size, out);
+    }
+    std::fclose(out);
+    std::printf("MSentara: web import: staged '%s' (%zu bytes)\n", path.c_str(),
+                size);
+    return path;
+}
+
+// Records one finished file and routes the whole batch once the last lands.
+void web_stage_one_done(const std::string& path) {
+    if (!path.empty()) {
+        g_web_paths.push_back(path);
+    }
+    if (--g_web_pending > 0) {
+        return;
+    }
+    const std::vector<std::string> paths = g_web_paths;
+    g_web_paths.clear();
+    if (paths.empty()) {
+        g_editor.set_status("Import failed: no readable files");
+        return;
+    }
+    route_dropped_paths(paths);
+}
+
+// The async fetch buffers must outlive their callbacks, so they live here and
+// are sized once, before any fetch starts.
+std::vector<std::vector<std::uint8_t>> g_web_buffers;
+
+void web_drop_fetch_cb(const sapp_html5_fetch_response* response) {
+    std::string path;
+    if (response->succeeded && response->data.size > 0) {
+        const char* name = sapp_get_dropped_file_path(response->file_index);
+        path = web_stage_write(name != nullptr ? name : "", response->data.ptr,
+                               response->data.size);
+    } else {
+        std::fprintf(stderr,
+                     "MSentara: web drop: fetch failed for file %d (code %d)\n",
+                     response->file_index,
+                     static_cast<int>(response->error_code));
+    }
+    web_stage_one_done(path);
+}
+
+// Begins fetching every file in the current browser drop.
+void begin_web_drop() {
+    const int count = sapp_get_num_dropped_files();
+    if (count <= 0) {
+        return;
+    }
+    web_stage_begin(count);
+    g_web_buffers.clear();
+    g_web_buffers.resize(static_cast<std::size_t>(count));
+
+    for (int i = 0; i < count; ++i) {
+        std::vector<std::uint8_t>& buffer =
+            g_web_buffers[static_cast<std::size_t>(i)];
+        buffer.assign(sapp_html5_get_dropped_file_size(i), 0u);
+
+        sapp_html5_fetch_request request = {};
+        request.dropped_file_index = i;
+        request.callback = web_drop_fetch_cb;
+        request.buffer.ptr = buffer.data();
+        request.buffer.size = buffer.size();
+        sapp_html5_fetch_dropped_file(&request);
+    }
+}
+
+// The file-picker entry points, called from shell.html. JS allocates the bytes
+// on the Emscripten heap, calls upload_file(), then upload_end() once every
+// selected file has been handed over. EMSCRIPTEN_KEEPALIVE keeps the symbols
+// in the module even though nothing in C++ calls them.
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE void msentara_upload_begin(int count) {
+    if (count > 0) {
+        web_stage_begin(count);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE void msentara_upload_file(const char* name,
+                                               const void* data, int size) {
+    if (g_web_pending <= 0) {
+        return;
+    }
+    const std::string path = web_stage_write(
+        name != nullptr ? name : "", data,
+        size > 0 ? static_cast<std::size_t>(size) : 0u);
+    web_stage_one_done(path);
+}
+
+EMSCRIPTEN_KEEPALIVE void msentara_upload_end() {
+    // Every file was handed over synchronously, so the batch has already been
+    // routed by the last upload_file() call. This exists so the JS side has a
+    // single, explicit place to say "that was all".
+    if (g_web_pending > 0) {
+        g_web_pending = 0;
+        web_stage_one_done({});
+    }
+}
+
+}  // extern "C"
+#endif  // __EMSCRIPTEN__
+
 void event_cb(const sapp_event* ev) {
+    // Drag-and-drop arrives as a single event carrying a file list, which ImGui
+    // never consumes, so it is handled before the UI gets a look in.
+    if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED) {
+#if defined(__EMSCRIPTEN__)
+        begin_web_drop();
+#else
+        const int count = sapp_get_num_dropped_files();
+        std::vector<std::string> paths;
+        paths.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            const char* path = sapp_get_dropped_file_path(i);
+            if (path != nullptr && path[0] != '\0') {
+                paths.emplace_back(path);
+            }
+        }
+        route_dropped_paths(paths);
+#endif
+        return;
+    }
+
     if (simgui_handle_event(ev)) {
         return;  // the UI consumed the event
     }
@@ -1463,6 +1842,10 @@ sapp_desc sokol_main(int argc, char* argv[]) {
             g_export_dir = argv[++i];
         } else if (arg.rfind("--export=", 0) == 0) {
             g_export_dir = arg.substr(9);
+        } else if (arg == "--export-gif" && i + 1 < argc) {
+            g_export_gif = argv[++i];
+        } else if (arg.rfind("--export-gif=", 0) == 0) {
+            g_export_gif = arg.substr(13);
         } else if ((arg == "--export-start") && i + 1 < argc) {
             g_export_start = std::atoi(argv[++i]);
         } else if ((arg == "--export-end") && i + 1 < argc) {
@@ -1484,6 +1867,12 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 #define MSENTARA_SAMPLE_COUNT 4
 #endif
     desc.sample_count = MSENTARA_SAMPLE_COUNT;
+    // Drag-and-drop import: allow a handful of files per drop and long enough
+    // paths for deep asset trees. sokol_app raises SAPP_EVENTTYPE_FILES_DROPPED
+    // and the app queries the paths in event_cb.
+    desc.enable_dragndrop = true;
+    desc.max_dropped_files = 16;
+    desc.max_dropped_file_path_length = 2048;
     desc.logger.func = slog_func;
     return desc;
 }

@@ -47,16 +47,21 @@ enum class EditorMode { ThreeD, TwoD };
 // shape.
 enum class Easing2DChannel { Position, Scale, Rotation, Opacity };
 
-// An offline frame-sequence export request: render frames [frame_start,
-// frame_end] (inclusive) into `directory` as PNG files. The app performs the
-// render because it owns the renderer; the editor only records the request.
+// An offline export request: render frames [frame_start, frame_end] inclusive.
+// The app performs the render because it owns the renderer; the editor only
+// records the request. By default the frames are written into `directory` as
+// numbered PNGs; when `gif_path` is set they are encoded into one animated GIF
+// there instead, and `directory` is ignored.
 struct ExportRequest {
     std::string directory;
+    std::string gif_path;
     int frame_start = 1;
     int frame_end = 1;
     int width = 0;   // 0 means "use the current viewport size"
     int height = 0;
     float fps = 30.0f;
+
+    bool is_gif() const { return !gif_path.empty(); }
 };
 
 // A sprite-variant add requested from the 2D Properties panel. The app decodes
@@ -481,6 +486,7 @@ private:
     char lipsync_variants_buffer_[128] = {};
     char project_path_buffer_[512] = {};
     char export_dir_buffer_[512] = {};
+    char export_gif_buffer_[512] = {};
     char variant_name_buffer_[128] = {};
     char variant_path_buffer_[512] = {};
     char preset_path_buffer_[512] = {};

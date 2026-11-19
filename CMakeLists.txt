@@ -58,6 +58,8 @@ add_library(msentara_core STATIC
     src/core/Animation.cpp
     src/core/AudioAnalysis.cpp
     src/core/Camera.cpp
+    src/core/DropRouter.cpp
+    src/core/GifExport.cpp
     src/core/Layer2D.cpp
     src/core/LipSync.cpp
     src/core/Mesh.cpp
@@ -103,9 +105,13 @@ target_include_directories(msentara_platform PUBLIC
     "${SOKOL_INCLUDE_DIR}"
     "${IMGUI_INCLUDE_DIR}"
 )
-# stb_image is an implementation detail of the platform layer, so it stays
-# PRIVATE.
-target_include_directories(msentara_platform PRIVATE "${STB_INCLUDE_DIR}")
+# stb_image and gif.h are implementation details of the platform layer, so they
+# stay PRIVATE and SYSTEM: gif-h is third-party and its own warnings must not
+# count against our strict flag set.
+target_include_directories(msentara_platform SYSTEM PRIVATE
+    "${STB_INCLUDE_DIR}"
+    "${GIFH_INCLUDE_DIR}"
+)
 target_compile_definitions(msentara_platform PUBLIC
     MSENTARA_SAMPLE_COUNT=${MSENTARA_SAMPLE_COUNT}
 )
@@ -147,8 +153,18 @@ if(MSENTARA_WEB)
         SUFFIX ".html"
         # MIN/MAX_WEBGL_VERSION=2 force WebGL2 (GLES3); USE_WEBGL2/FULL_ES3
         # keep the GLES3 sokol backend and full ES3 shader syntax enabled.
+        #
+        # FETCH enables sokol_app's async dropped-file API, FORCE_FILESYSTEM
+        # keeps MEMFS available without an explicit preload so a dropped file
+        # can be staged and read back by the loaders, and the exported runtime
+        # methods are what shell.html's file picker needs to hand bytes over
+        # (cwrap/_malloc/_free/HEAPU8). The msentara_upload_* entry points are
+        # kept alive by EMSCRIPTEN_KEEPALIVE in main.cpp.
         LINK_FLAGS "-sUSE_WEBGL2=1 -sFULL_ES3=1 -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
                     -sALLOW_MEMORY_GROWTH=1 \
+                    -sFETCH=1 -sFORCE_FILESYSTEM=1 \
+                    -sEXPORTED_RUNTIME_METHODS=cwrap,HEAPU8 \
+                    -sEXPORTED_FUNCTIONS=_malloc,_free \
                     -sEXIT_RUNTIME=0 -sSTACK_SIZE=1048576 \
                     --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/cmake/web/shell.html"
     )

@@ -23,6 +23,7 @@
 #include <functional>
 #include <vector>
 
+#include "core/GifExport.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "ImGuizmo.h"
@@ -52,7 +53,7 @@ constexpr const char* kOutlinerWindow = "Outliner";
 constexpr const char* kPropertiesWindow = "Properties";
 constexpr const char* kMorphsWindow = "Morphs";
 constexpr const char* kTimelineWindow = "Timeline";
-constexpr const char* kExportModal = "Export PNG Sequence";
+constexpr const char* kExportModal = "Export Frames";
 
 // The default docking layout: viewport on the left, outliner top-right,
 // properties bottom-right, timeline across the bottom.
@@ -476,7 +477,7 @@ void Editor::draw_main_menu_bar() {
         // Offline rendering is a desktop-only feature: the web build has no
         // synchronous framebuffer readback, so the entry is hidden there.
 #if !defined(__EMSCRIPTEN__)
-        if (ImGui::MenuItem("Export PNG Sequence…")) {
+        if (ImGui::MenuItem("Export Frames / GIF…")) {
             export_modal_open_ = true;
         }
 #endif
@@ -1237,6 +1238,14 @@ void Editor::draw_export_modal() {
         "Files are written as frame_0000.png, frame_0001.png, ...");
 
     ImGui::Spacing();
+    ImGui::TextUnformatted("Animated GIF");
+    ImGui::SetNextItemWidth(420.0f);
+    ImGui::InputText("##export_gif", export_gif_buffer_,
+                     sizeof(export_gif_buffer_));
+    ImGui::TextDisabled(
+        "One animated file, e.g. preview.gif (ignores the directory above).");
+
+    ImGui::Spacing();
     ImGui::TextUnformatted("Frame range");
     ImGui::SetNextItemWidth(120.0f);
     ImGui::DragInt("##export_start", &export_start_, 1.0f, -100000, 100000,
@@ -1256,11 +1265,34 @@ void Editor::draw_export_modal() {
     }
 
     ImGui::Separator();
+    // Typing a .gif path into the directory field is treated as a GIF request,
+    // matching the command line; the dedicated field below is the explicit way.
+    const bool dir_is_gif =
+        export_gif_buffer_[0] == '\0' && has_gif_extension(export_dir_buffer_);
     const bool dir_ok = export_dir_buffer_[0] != '\0';
     ImGui::BeginDisabled(!dir_ok);
-    if (ImGui::Button("Export", ImVec2(120.0f, 0.0f))) {
+    if (ImGui::Button(dir_is_gif ? "Export Animated GIF" : "Export PNG Sequence",
+                      ImVec2(180.0f, 0.0f))) {
         ExportRequest request;
-        request.directory = export_dir_buffer_;
+        if (dir_is_gif) {
+            request.gif_path = export_dir_buffer_;
+        } else {
+            request.directory = export_dir_buffer_;
+        }
+        request.frame_start = export_start_;
+        request.frame_end = export_end_;
+        request.fps = timeline_.fps;
+        request_export(request);
+        export_modal_open_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool gif_ok = export_gif_buffer_[0] != '\0';
+    ImGui::BeginDisabled(!gif_ok);
+    if (ImGui::Button("Export Animated GIF", ImVec2(180.0f, 0.0f))) {
+        ExportRequest request;
+        request.gif_path = export_gif_buffer_;
         request.frame_start = export_start_;
         request.frame_end = export_end_;
         request.fps = timeline_.fps;

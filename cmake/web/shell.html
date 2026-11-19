@@ -35,11 +35,126 @@
       text-align: center;
       pointer-events: none;
     }
+    /*
+      The import bar sits above the canvas. Dragging files onto the page is the
+      primary route, but a Chromebook (and any locked-down browser) can refuse a
+      drag that starts outside the page, so a click-to-choose fallback is always
+      available. It fades out once the app is running so it does not cover the
+      viewport.
+    */
+    #import-bar {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: rgba(40, 40, 44, 0.85);
+      border: 1px solid #3a3a40;
+      font-size: 13px;
+      z-index: 10;
+      transition: opacity 0.4s ease;
+    }
+    #import-bar.dim { opacity: 0.35; }
+    #import-bar:hover { opacity: 1; }
+    #import-bar label {
+      cursor: pointer;
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: #4772b3;
+      color: #fff;
+    }
+    #import-bar label:hover { background: #5585cc; }
+    #import-bar input[type="file"] { display: none; }
+    #import-note { color: #9a9aa2; }
   </style>
 </head>
 <body>
   <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
   <div id="status">Loading MSentara&hellip;</div>
+
+  <div id="import-bar">
+    <span id="import-note">Import files:</span>
+    <label for="file-picker">Choose files&hellip;</label>
+    <!-- The accept list mirrors the extensions the C++ drop router understands,
+         so the picker does not offer files the app would only reject. -->
+    <input id="file-picker" type="file" multiple
+           accept=".pmx,.vmd,.png,.jpg,.jpeg,.tga,.bmp,.wav,.mp3,.flac,.ogg,.msentara,.mschar2d">
+  </div>
+
   {{{ SCRIPT }}}
+
+  <script>
+  // Bridges the file picker to the C++ importer. The native drag-and-drop path
+  // (sokol's FILES_DROPPED event) needs no help here; this only covers the
+  // click-to-choose fallback, which the browser implements as a plain file
+  // input and which therefore hands us File objects rather than a drop event.
+  //
+  // Each file is copied onto the Emscripten heap and passed to
+  // msentara_upload_file(), then the heap block is freed. The C++ side stages
+  // the batch into MEMFS and routes it through the same code the desktop drop
+  // uses, so both platforms import identically.
+  (function () {
+    function uploadFiles(fileList) {
+      if (!fileList || fileList.length === 0) {
+        return;
+      }
+      const files = Array.from(fileList);
+      const begin = Module.cwrap('msentara_upload_begin', null, ['number']);
+      const upload = Module.cwrap('msentara_upload_file', null,
+                                  ['string', 'number', 'number']);
+      const end = Module.cwrap('msentara_upload_end', null, []);
+
+      begin(files.length);
+      let chain = Promise.resolve();
+      files.forEach(function (file) {
+        chain = chain.then(function () {
+          return file.arrayBuffer().then(function (buffer) {
+            const bytes = new Uint8Array(buffer);
+            const ptr = Module._malloc(bytes.length || 1);
+            Module.HEAPU8.set(bytes, ptr);
+            upload(file.name, ptr, bytes.length);
+            Module._free(ptr);
+          });
+        });
+      });
+      chain.then(function () { end(); }).catch(function (err) {
+        console.error('MSentara: file import failed', err);
+        end();
+      });
+    }
+
+    function wire() {
+      const picker = document.getElementById('file-picker');
+      const bar = document.getElementById('import-bar');
+      if (!picker) {
+        return;
+      }
+      picker.addEventListener('change', function () {
+        uploadFiles(picker.files);
+        // Clear so choosing the same file twice fires 'change' again.
+        picker.value = '';
+      });
+      // The app replaces the loading overlay once the GL context is up; that
+      // is the moment to dim the bar so it stops covering the viewport.
+      const status = document.getElementById('status');
+      if (status) {
+        status.addEventListener('msentara-ready', function () {
+          bar.classList.add('dim');
+        });
+      }
+      // Belt and braces: dim on a timer even if the event above is missed.
+      setTimeout(function () { bar.classList.add('dim'); }, 3000);
+    }
+
+    if (typeof Module !== 'undefined') {
+      wire();
+    } else {
+      window.addEventListener('load', wire);
+    }
+  })();
+  </script>
 </body>
 </html>

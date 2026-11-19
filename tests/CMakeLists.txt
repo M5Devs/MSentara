@@ -20,6 +20,7 @@
 set(MSENTARA_CORE_TESTS
     test_2d
     test_camera
+    test_droprouter
     test_ik_morph
     test_lipsync
     test_mesh
@@ -105,6 +106,22 @@ msentara_set_warnings(test_audio)
 
 add_test(NAME test_audio COMMAND test_audio)
 set_tests_properties(test_audio PROPERTIES
+    LABELS "core;platform"
+    TIMEOUT 60
+)
+
+# The GIF export test encodes real frames through the platform GifWriter, so it
+# links the platform library too (no GPU or window is touched).
+add_executable(test_gifexport test_gifexport.cpp)
+target_include_directories(test_gifexport PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_link_libraries(test_gifexport PRIVATE msentara_platform)
+msentara_set_warnings(test_gifexport)
+
+add_test(NAME test_gifexport COMMAND test_gifexport)
+set_tests_properties(test_gifexport PROPERTIES
     LABELS "core;platform"
     TIMEOUT 60
 )
