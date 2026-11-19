@@ -43,15 +43,26 @@ jobs:
 
       # sokol_app's X11 backend needs the X11/GL headers and unversioned .so
       # symlinks (only the -dev packages provide them).
+      #
+      # Retried because the hosted runner intermittently cannot reach
+      # azure.archive.ubuntu.com, which fails the job before CMake ever runs.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ninja-build \
-            libgl1-mesa-dev libglx-dev \
-            libx11-dev libxcursor-dev libxi-dev libxext-dev \
-            libxrandr-dev libxinerama-dev \
-            xvfb x11-utils mesa-utils
+          for attempt in 1 2 3; do
+            if sudo apt-get update &&
+               sudo apt-get install -y --no-install-recommends \
+                 ninja-build \
+                 libgl1-mesa-dev libglx-dev \
+                 libx11-dev libxcursor-dev libxi-dev libxext-dev \
+                 libxrandr-dev libxinerama-dev \
+                 xvfb x11-utils mesa-utils; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed; retrying in 15s" >&2
+            sleep 15
+          done
+          echo "apt failed after 3 attempts" >&2
+          exit 1
 
       - name: Configure
         run: >

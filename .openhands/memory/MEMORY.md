@@ -335,3 +335,61 @@ Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
   warns on unused `export_*` members in `Editor.cpp` — the export modal is
   desktop-only (`#if !defined(__EMSCRIPTEN__)`), so clang's
   `-Wunused-private-field` fires; harmless (no `-Werror`) and pre-existing.
+
+## Web build was silently dead — three stacked bugs (commit e6b99ca)
+
+The deployed Pages build never rendered. Diagnosis path worth remembering:
+
+- **Symptom signature**: `Module.calledRun === true`, WebGL2 available, canvas
+  stuck at the default 300x150, `requestAnimationFrame` count **0**, page frozen
+  on "Loading MSentara…", and **zero** console output (not even sokol's own
+  logs). Zero output despite a started module is the tell that `main()` never
+  ran — sokol logs from `sapp_run`, which is called by `main()`.
+- **Bug 1 — `_main` not exported**: `-sEXPORTED_FUNCTIONS` **replaces**
+  emscripten's default export list rather than adding to it, and `_main` is only
+  exported *by* that default. The project listed `_malloc,_free`, so `main()`
+  was never called and wasm DCE removed the entire app: wasm was 734 KB and
+  contained no `#canvas`/`webgl2` strings even though `SokolImpl.cpp.o` did.
+  Adding `_main` grew it to 2.0 MB. **Always keep `_main` in EXPORTED_FUNCTIONS.**
+- **Bug 2 — overlay never cleared**: `shell.html` listened for a
+  `msentara-ready` event that nothing dispatched. `init_cb` now fires it via
+  `EM_ASM` and also sets `window.__msentaraReady`, because the bundle is loaded
+  with `async` and can reach `init_cb` *before* the listener attaches.
+- **Bug 3 — all shaders failed on WebGL2**: `layout(location=N)` on **varyings**
+  (vertex `out` / fragment `in`) is rejected by GLSL ES 3.00 — "invalid layout
+  qualifier: only valid on program inputs and outputs". It is legal on vertex
+  inputs and fragment outputs, so only strip it from varyings. Desktop
+  `#version 410` accepts it either way; both old and new shaders compile+link
+  against Mesa GL 4.5, so the change is a no-op on desktop.
+
+### Verifying web rendering without devtools or a GPU
+
+- Playwright `chromium-headless-shell` + `--use-gl=angle --use-angle=swiftshader
+  --enable-unsafe-swiftshader --ignore-gpu-blocklist` renders WebGL2 in software.
+- Assert on: `raf` counter (wrap `requestAnimationFrame` in an `addInitScript`),
+  `canvas.width/height` (must stop being 300x150), console/pageerror arrays,
+  and a PNG pixel histogram. Blank = ~42 unique colors; working = 200+ with the
+  cube's `(154,64,64)` and the grid's `(76,76,31)` present.
+- **`strings` on a `.wasm` is unreliable** (data section is compressed) — it
+  reported 0 hits for strings that were definitely present. Check the `.o` with
+  `llvm-nm`/`strings`, or `llvm-objdump --syms` on the wasm.
+
+### Eruda (in-page console) — `cmake/web/shell.html`
+
+- Injected dynamically (`document.createElement('script')`) with `onload`/
+  `onerror` so a blocked CDN can never break the app. Pinned `eruda@3.4.3`.
+- **Eruda 3.x renders into a shadow DOM.** `document.querySelector('.eruda-*')`
+  finds nothing; use `window.eruda._shadowRoot.querySelector(...)`. Its entry
+  button needs a **real** mouse event — a synthetic `btn.click()` does not open
+  the panel, and `eruda.show()` alone also left `.eruda-dev-tools` at
+  `display:none`; `page.mouse.click()` on the button's box works.
+
+### Build-system gotcha
+
+- `--shell-file` goes through `LINK_FLAGS`, which CMake does **not** scan for
+  file dependencies, so editing `shell.html` produced "ninja: no work to do"
+  and a stale `.html`. Fixed with
+  `set_property(TARGET MSentara APPEND PROPERTY LINK_DEPENDS <shell>)`.
+- `EM_ASM({...})` with no variadic argument warns under C++17
+  (`-Wc++20-extensions`: "passing no argument for the '...' parameter"). Pass a
+  dummy (`EM_ASM({...}, 0)`) to keep the zero-warning policy.
