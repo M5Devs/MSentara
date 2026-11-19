@@ -252,3 +252,41 @@ Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
 - Export frames for offline inspection: `MSentara --pmx M --export DIR
   --export-start N --export-end N`; headless via Xvfb (`DISPLAY=:77`,
   `LIBGL_ALWAYS_SOFTWARE=1`) + `import -window root`.
+
+## GIF export + drag-and-drop/web import (commit 355f86c)
+
+- **`gif-h` pinned by commit** (`MSENTARA_GIFH_TAG`) like sokol, not by tag —
+  the repo has no usable tag history for a shallow clone. Its include dir is
+  `SYSTEM PRIVATE` on `msentara_platform` so its warnings never reach `-Werror`.
+- **`GifWriter` (ImageIO) is non-copyable** (`Impl*` + no copy ctor) — this is
+  why `ExportSession` has a `reset()` instead of assigning a fresh writer.
+  `begin()` calls `finish()` first and `finish()` no-ops when closed, so
+  re-begin and unconditional destructor/reset are both safe.
+- **GIF delay is centiseconds**, so 24 fps → 4 cs (~25 fps effective). Delay 0
+  is clamped to 1 because most viewers substitute ~10 cs for 0.
+- **`.gif` path implies GIF**: `--export out.gif` and typing a `.gif` into the
+  modal's directory field both switch to GIF (`has_gif_extension`). A directory
+  cannot carry that extension, so this is unambiguous.
+- **Drop policy is pure and unit-tested**: `plan_drop()` in `core/DropRouter`
+  returns indices + `images_become_layers` + `ignored`. Rules: project
+  supersedes everything (all others ignored); first model/motion/audio wins;
+  images are 2D layers only when **no** model is present, else they are the
+  model's textures and count as ignored. `main.cpp` only carries the plan out.
+- **Web import**: sokol `SAPP_EVENTTYPE_FILES_DROPPED` on desktop;
+  `shell.html` `<input type=file>` → `msentara_upload_begin/file/end`
+  (`EMSCRIPTEN_KEEPALIVE`) on web. Both stage into one fresh
+  `/tmp/msentara_drop_<n>` MEMFS dir then call the same `route_dropped_paths()`
+  so PMX-relative textures still resolve. `upload_end()`'s `g_web_pending > 0`
+  guard prevents a double route.
+- **Web link needs** `-sFETCH=1 -sFORCE_FILESYSTEM=1
+  -sEXPORTED_RUNTIME_METHODS=cwrap,HEAPU8 -sEXPORTED_FUNCTIONS=_malloc,_free`.
+  Without FETCH the dropped-file API is absent; without the exports the picker's
+  `Module.cwrap`/`_malloc` are undefined.
+- **glm headers are `INTERFACE_SYSTEM_INCLUDE_DIRECTORIES`** (set on the real
+  target `glm`, NOT the alias `glm::glm` — `set_property` on an alias errors).
+  glm trips `-Wsign-conversion`, which was polluting every build. The `SYSTEM`
+  keyword on `target_link_libraries` needs CMake 3.25; this project supports
+  3.20, so the property is used instead.
+- **ASan on Xvfb reports ~108 KB "leaked" in `libGLX_mesa`** — that is the
+  software GL driver, not our code; a baseline run with no export shows the
+  same trace. Judge sanitizer results by whether the stack names project code.
