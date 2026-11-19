@@ -119,12 +119,13 @@ jobs:
               --lipsync-2d "1,2"
 
   windows:
-    name: Windows (MSVC)
+    name: Windows (MinGW-w64)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      # Put Ninja on PATH; the generator itself is selected by -G below.
+      # The Windows runner ships MinGW-w64 GCC at C:/mingw64, which CMake picks
+      # up as the default c++/cc; the job name used to say MSVC and was wrong.
       - name: Set up Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
