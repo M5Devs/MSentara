@@ -845,9 +845,10 @@ bool read_bones(Reader& r, const Globals& globals, Skeleton& skeleton) {
         // guarantees the hierarchy stays acyclic.
         const int parent_index =
             (parent >= 0 && parent < static_cast<std::int32_t>(i)) ? parent : -1;
+        // The local name is canonical: VMD addresses bones by it, so a motion
+        // only binds when the two agree. The universal name is display-only.
         const int bone_index = skeleton.add_bone(
-            name_universal.empty() ? name_local : name_universal, parent_index,
-            to_right_handed(position));
+            name_local, parent_index, to_right_handed(position), name_universal);
 
         Bone& bone = skeleton.bone(bone_index);
         bone.deform_depth = layer;
@@ -907,7 +908,10 @@ bool read_morphs(Reader& r, const Globals& globals, MorphSet& morphs) {
         const std::size_t n = static_cast<std::size_t>(offset_count);
 
         MorphTarget target;
-        target.name = name_universal.empty() ? name_local : name_universal;
+        // Local name is canonical (VMD morph tracks use it); universal is
+        // display-only.
+        target.name = name_local;
+        target.name_en = name_universal;
 
         switch (type) {
             case kMorphGroup: {

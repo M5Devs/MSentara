@@ -401,6 +401,86 @@ void build_ik_model(PmxBuilder& b) {
     b.i32(0);  // joints
 }
 
+// A PMX whose bone and morph carry both a local and a universal (English)
+// name. MMD/VMD address bones and morphs by the *local* name, so the loader
+// must keep that as the canonical name and stash the English one only for
+// display. Storing the English name as canonical silently breaks motion
+// binding for every bone whose English name differs from its local name.
+void build_named_model(PmxBuilder& b) {
+    const auto text = [&](const std::string& s) { b.text_utf8(s); };
+
+    b.raw("PMX ");
+    b.f32(2.0f);
+    b.u8(8);
+    b.u8(1);  // UTF-8
+    b.u8(0);
+    for (int i = 0; i < 6; ++i) {
+        b.u8(1);  // every index size = 1 byte
+    }
+    text("NamedModel");
+    text("");
+    text("");
+    text("");
+
+    b.i32(0);  // vertices
+    b.i32(0);  // surfaces
+    b.i32(0);  // textures
+    b.i32(0);  // materials
+
+    // --- Bones: one root with distinct local/universal names ---
+    b.i32(1);
+    text("右足");
+    text("right leg");
+    b.vec3f(vec3(0.0f, 1.0f, 0.0f));
+    b.i8(-1);
+    b.i32(0);
+    b.u8(0x00);
+    b.u8(0x00);  // no flags
+    b.vec3f(vec3(0.0f, 0.0f, 0.0f));
+
+    // --- Morphs: one vertex morph with distinct local/universal names ---
+    b.i32(1);
+    text("まばたき");
+    text("Blink");
+    b.u8(1);   // panel
+    b.u8(1);   // type: vertex
+    b.i32(0);  // no offsets (this model has no vertices)
+
+    b.i32(0);  // display frames
+    b.i32(0);  // rigid bodies
+    b.i32(0);  // joints
+}
+
+void test_local_names_are_canonical() {
+    PmxBuilder b;
+    build_named_model(b);
+    const PmxResult result = parse_pmx(b.data(), b.size());
+    MS_CHECK(result.ok);
+    if (!result.ok) {
+        return;
+    }
+
+    const Skeleton& skeleton = result.model.skeleton;
+    MS_CHECK(skeleton.size() == 1);
+    const Bone& bone = skeleton.bone(0);
+    // Canonical name is the local one, so a VMD track named 右足 binds.
+    MS_CHECK(bone.name == "右足");
+    MS_CHECK(bone.name_en == "right leg");
+    MS_CHECK(bone.display_name() == "right leg");
+    MS_CHECK(skeleton.find_bone("右足") == 0);
+    // The English name must not be the match key.
+    MS_CHECK(skeleton.find_bone("right leg") == -1);
+
+    const MorphSet& morphs = result.model.morphs;
+    MS_CHECK(morphs.size() == 1);
+    const MorphTarget& morph = morphs.target(0);
+    MS_CHECK(morph.name == "まばたき");
+    MS_CHECK(morph.name_en == "Blink");
+    MS_CHECK(morph.display_name() == "Blink");
+    MS_CHECK(morphs.find("まばたき") == 0);
+    MS_CHECK(morphs.find("Blink") == -1);
+}
+
 void test_ik_roles_and_solve() {
     PmxBuilder b;
     build_ik_model(b);
@@ -706,6 +786,7 @@ int main() {
     test_weights();
     test_materials_and_textures();
     test_bones_and_hierarchy();
+    test_local_names_are_canonical();
     test_ik_roles_and_solve();
     test_skin_pose_math();
     test_morphs();

@@ -39,7 +39,22 @@ namespace ms {
 // Nothing here mentions PMX: a rig built by hand, or by a future 2D format,
 // uses exactly the same structure.
 struct Bone {
+    // Canonical name. For a PMX rig this is the *local* (usually Japanese)
+    // name, which is what MMD and VMD use to address a bone; matching by it is
+    // what makes a motion bind to the right bone.
     std::string name;
+
+    // Universal (English) name when the source carries one, else empty. Used
+    // only for display: prefer it so a bone reads in Latin script even on a
+    // system with no CJK font.
+    std::string name_en;
+
+    // Name to show in the UI: the English name when present, else the
+    // canonical one.
+    const std::string& display_name() const {
+        return name_en.empty() ? name : name_en;
+    }
+
     int parent = -1;  // index into Skeleton::bones(), -1 for a root
 
     // Model-space rest position. Informational, and what the UI shows.
@@ -85,12 +100,15 @@ class Skeleton {
 public:
     // Appends a bone and returns its index. `rest_position` is in model space,
     // so the stored rest_local is the offset from the parent's rest position.
-    // `parent` must already exist, or be -1.
-    int add_bone(const std::string& name, int parent, const vec3& rest_position);
+    // `parent` must already exist, or be -1. `name_en` is the optional English
+    // display name.
+    int add_bone(const std::string& name, int parent, const vec3& rest_position,
+                 const std::string& name_en = "");
 
     // Appends a bone with an explicit rest-local matrix, for rigs that carry
     // bone orientation (PMX bones do not, but glTF joints do).
-    int add_bone(const std::string& name, int parent, const mat4& rest_local);
+    int add_bone(const std::string& name, int parent, const mat4& rest_local,
+                 const std::string& name_en = "");
 
     std::size_t size() const { return bones_.size(); }
     bool empty() const { return bones_.empty(); }

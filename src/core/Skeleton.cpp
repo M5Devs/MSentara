@@ -120,7 +120,7 @@ float clamp_angle(float angle, float min_angle, float max_angle) {
 }  // namespace
 
 int Skeleton::add_bone(const std::string& name, int parent,
-                       const vec3& rest_position) {
+                       const vec3& rest_position, const std::string& name_en) {
     const vec3 parent_position =
         (parent >= 0 && parent < static_cast<int>(bones_.size()))
             ? bones_[static_cast<std::size_t>(parent)].rest_position
@@ -128,6 +128,7 @@ int Skeleton::add_bone(const std::string& name, int parent,
 
     Bone bone;
     bone.name = name;
+    bone.name_en = name_en;
     bone.parent = parent;
     bone.rest_position = rest_position;
     bone.rest_local = glm::translate(mat4(1.0f), rest_position - parent_position);
@@ -136,9 +137,10 @@ int Skeleton::add_bone(const std::string& name, int parent,
 }
 
 int Skeleton::add_bone(const std::string& name, int parent,
-                       const mat4& rest_local) {
+                       const mat4& rest_local, const std::string& name_en) {
     Bone bone;
     bone.name = name;
+    bone.name_en = name_en;
     bone.parent = parent;
     bone.rest_local = rest_local;
     bone.rest_position = vec3(rest_local[3]);

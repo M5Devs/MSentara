@@ -60,7 +60,18 @@ struct BoneMorphOffset {
 struct MorphTarget {
     enum class Kind { Vertex, Bone, Group };
 
+    // Canonical name: the local (usually Japanese) name for a PMX morph, which
+    // is what a VMD morph track matches against.
     std::string name;
+
+    // Universal (English) name when present, else empty. Display-only.
+    std::string name_en;
+
+    // Name to show in the UI: English when available, else canonical.
+    const std::string& display_name() const {
+        return name_en.empty() ? name : name_en;
+    }
+
     Kind kind = Kind::Vertex;
 
     // Kind == Vertex

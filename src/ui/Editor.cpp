@@ -655,7 +655,7 @@ void Editor::draw_model_tree() {
 
         ImGui::PushID(bone);
         const bool open = ImGui::TreeNodeEx(
-            "bone", flags, "%s", b.name.c_str());
+            "bone", flags, "%s", b.display_name().c_str());
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
             model_->select_bone(bone);
         }
@@ -684,10 +684,10 @@ void Editor::draw_bone_properties() {
     }
 
     const Bone& b = m->model().skeleton.bone(bone);
-    ImGui::Text("Bone: %s", b.name.c_str());
+    ImGui::Text("Bone: %s", b.display_name().c_str());
     ImGui::TextDisabled("parent: %s",
                         b.parent >= 0
-                            ? m->model().skeleton.bone(b.parent).name.c_str()
+                            ? m->model().skeleton.bone(b.parent).display_name().c_str()
                             : "(root)");
 
     // IK solving can be toggled so the user can compare the solved pose against
@@ -782,7 +782,7 @@ void Editor::draw_morphs_panel() {
             case MorphTarget::Kind::Group:  kind = "Group";  break;
         }
         ImGui::PushID(static_cast<int>(i));
-        ImGui::TextUnformatted(target.name.c_str());
+        ImGui::TextUnformatted(target.display_name().c_str());
         ImGui::SameLine();
         ImGui::TextDisabled("(%s)", kind);
         ImGui::SetNextItemWidth(-1.0f);
@@ -1513,9 +1513,14 @@ void Editor::draw_layer2d_properties() {
         } else {
             const Skeleton& skeleton = model_->model().skeleton;
             // A combo listing every bone, plus an explicit "(unbound)" entry.
+            // The stored bound_bone is the canonical (match) name; the label is
+            // the display name.
             const std::string current = layer->bound_bone;
+            const int current_index = skeleton.find_bone(current);
             const char* preview =
-                current.empty() ? "(unbound)" : current.c_str();
+                (current_index >= 0)
+                    ? skeleton.bone(current_index).display_name().c_str()
+                    : (current.empty() ? "(unbound)" : current.c_str());
             ImGui::TextUnformatted("Bone");
             ImGui::SameLine(90.0f);
             ImGui::SetNextItemWidth(-1.0f);
@@ -1525,7 +1530,7 @@ void Editor::draw_layer2d_properties() {
                 }
                 for (const Bone& bone : skeleton.bones()) {
                     const bool selected = (bone.name == current);
-                    if (ImGui::Selectable(bone.name.c_str(), selected)) {
+                    if (ImGui::Selectable(bone.display_name().c_str(), selected)) {
                         layer->bound_bone = bone.name;
                     }
                 }
@@ -1854,10 +1859,13 @@ void Editor::draw_easing_editor() {
         ImGui::TextDisabled("Select a bone to edit its keyframe easing");
         return;
     }
-    const std::string& bone_name = skeleton.bone(bone).name;
+    const Bone& bone_ref = skeleton.bone(bone);
+    // Match on the canonical name; show the display name in messages.
+    const std::string& bone_name = bone_ref.name;
+    const std::string& bone_label = bone_ref.display_name();
     const BoneTrack* track = model_->clip().find_bone(bone_name);
     if (track == nullptr) {
-        ImGui::TextDisabled("Bone '%s' has no animation track", bone_name.c_str());
+        ImGui::TextDisabled("Bone '%s' has no animation track", bone_label.c_str());
         return;
     }
     const int frame = current_frame_int();
@@ -1870,7 +1878,7 @@ void Editor::draw_easing_editor() {
     }
     if (key == nullptr) {
         ImGui::TextDisabled("Bone '%s' has no key at frame %d",
-                            bone_name.c_str(), frame);
+                            bone_label.c_str(), frame);
         return;
     }
     const char* channels[] = {"Translate X", "Translate Y", "Translate Z",
