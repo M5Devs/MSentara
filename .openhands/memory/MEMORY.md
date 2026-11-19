@@ -238,6 +238,17 @@ Verified with the full Miku model (27491 verts, 211 bones, 92 rigid bodies,
 - **CJK names**: ImGui's default atlas is Latin-only; `load_ui_fonts()`
   (`src/ui/Theme.cpp`) merges a system CJK TTF. `AddFontFromFileTTF` **asserts**
   on a missing file, so guard the path with an existence check.
+- **PMX names**: the *local* (JP) name is the canonical match key — MMD/VMD
+  address bones & morphs by it. `Bone`/`MorphTarget` keep `name` (local) +
+  `name_en` (universal) + `display_name()` (EN if present). UI labels use
+  `display_name()`; every lookup/binding/ProjectIO uses `name`. Storing the
+  universal name as `name` (an old bug) silently unbound every EN≠JP track
+  (real Miku: morph tracks 1/104 → 36/104 after the fix).
+- **PMX IK roles**: the "target index" is the **effector** (chain end that
+  moves); the bone carrying the IK flag (e.g. `右足ＩＫ`) is the **goal**
+  (controller). Inverting them makes a chain fly *away* from its handle and
+  curl up (twin-tails bug). Matches `saba` `MMDIkSolver`. Bone-flag word is
+  little-endian: `kBoneIk=0x0020` → bytes `0x20,0x00`.
 - Export frames for offline inspection: `MSentara --pmx M --export DIR
   --export-start N --export-end N`; headless via Xvfb (`DISPLAY=:77`,
   `LIBGL_ALWAYS_SOFTWARE=1`) + `import -window root`.
